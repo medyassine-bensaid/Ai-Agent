@@ -1,0 +1,71 @@
+version: "3.9"
+
+services:
+  agent:
+    image: ${AGENT_IMAGE}
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: devops-agent
+    restart: unless-stopped
+    stdin_open: true
+    tty: true
+    ports:
+    - "8001:8001"
+    environment:
+      - GROQ_API_KEY=${GROQ_API_KEY}
+      - TAVILY_API_KEY=${TAVILY_API_KEY}
+      - LANGFUSE_SECRET_KEY=${LANGFUSE_SECRET_KEY}
+      - LANGFUSE_PUBLIC_KEY=${LANGFUSE_PUBLIC_KEY}
+      - LANGFUSE_BASE_URL=${LANGFUSE_BASE_URL:-https://cloud.langfuse.com}
+      - APP_ENV=${APP_ENV:-production}
+      - APP_VERSION=${APP_VERSION:-0.1.0}
+      - CHROMA_PATH=/app/data/chroma
+    volumes:
+      - chroma_data:/app/data/chroma
+    command: >
+         sh -c "python /app/monitoring/langfuse_exporter.py & 
+         python /app/main.py"
+    healthcheck:
+      test: ["CMD", "python", "scripts/healthcheck.py"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ── Lightweight observability stack ────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:v2.51.0
+    container_name: prometheus
+    restart: unless-stopped
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command: ["--config.file=/etc/prometheus/prometheus.yml",
+              "--storage.tsdb.retention.time=7d"]
+    ports:
+      - "9080:9090"
+
+  grafana:
+    image: grafana/grafana:10.4.0
+    container_name: grafana
+    restart: unless-stopped
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin}
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana_data:/var/lib/grafana
+    ports:
+      - "3001:3000"
+    depends_on:
+      - prometheus
+
+volumes:
+  chroma_data:
+  prometheus_data:
+  grafana_data:

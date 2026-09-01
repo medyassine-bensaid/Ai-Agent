@@ -1,0 +1,21 @@
+resources:
+  - ../../base
+
+# On force le type NodePort uniquement pour Minikube
+#patches:
+ # - patch: |-
+  #    apiVersion: v1
+   #   kind: Service
+    #  metadata:
+     #   name: ai-agent-service
+    #  spec:
+    #    type: NodePort
+   # target:
+    #  kind: Service
+     # name: ai-agent-service
+
+# Gestion dynamique de l'image
+images:
+  - name: ai-agent
+    newName: medyassinebensaid/devops-ai-agent
+    newTag: latest

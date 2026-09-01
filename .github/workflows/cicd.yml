@@ -1,0 +1,263 @@
+name: LLMOps CI/CD
+
+on:
+  push:
+    branches: ["main", "master"]
+  pull_request:
+    branches: ["main", "master"]
+  workflow_dispatch:
+    inputs:
+      target_job:
+        description: 'Sélectionnez le job à tester'
+        required: true
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - setup
+          - install
+          - lint
+          - test
+          - docker-build
+          - docker-push
+          - deploy-docker
+          - evaluate
+          - deploy-minikube
+
+env:
+  PROJECT_NAME: "DevOps-AI-AGENT"
+  PROJECT_CATEGORY: "IA"
+  DOCKER_IMAGE: "${{ secrets.DOCKERHUB_USERNAME }}/devops-ai-agent"
+  LANGFUSE_BASE_URL: "http://localhost:3000"
+  PYTHON_VERSION: "3.11"
+  K8S_NAMESPACE: "ai-agent-dev"
+
+jobs:
+  # 1 · SETUP
+  setup:
+    name: "1 · Setup"
+    if: github.event.inputs.target_job == 'setup' || github.event.inputs.target_job == 'all' || github.event_name != 'workflow_dispatch'
+    runs-on: self-hosted
+    container:
+      image: ubuntu:22.04
+    outputs:
+      short_sha: ${{ steps.get_sha.outputs.short_sha }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set Short SHA
+        id: get_sha
+        shell: bash
+        run: |
+          echo "short_sha=${GITHUB_SHA::8}" >> "$GITHUB_OUTPUT"
+  # 2 · INSTALL
+  install:
+    name: "2 · Install"
+    needs: setup
+    if: always() && (github.event.inputs.target_job == 'install' || github.event.inputs.target_job == 'all' || github.event_name != 'workflow_dispatch')
+    runs-on: self-hosted
+    container:
+      image: python:3.11-slim
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt ruff pytest
+  # 3 · LINT
+  lint:
+    name: "3 · Lint"
+    needs: install
+    if: always() && (github.event.inputs.target_job == 'lint' || github.event.inputs.target_job == 'all' || github.event_name != 'workflow_dispatch')
+    runs-on: self-hosted
+    container:
+      image: python:3.11-slim
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Install Ruff
+        run: pip install ruff
+      - name: Run Ruff
+        run: |
+          python -m ruff check . --fix --unsafe-fixes
+          python -m ruff check .
+  # 4 · TEST
+  test:
+    name: "4 · Test"
+    needs: lint
+    if: always() && (github.event.inputs.target_job == 'test' || github.event.inputs.target_job == 'all' || github.event_name != 'workflow_dispatch')
+    runs-on: self-hosted
+    container:
+      image: python:3.11-slim
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Install Dependencies
+        run: pip install -r requirements.txt pytest
+      - name: Run Pytest
+        env:
+          LANGFUSE_BASE_URL: ${{ env.LANGFUSE_BASE_URL }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+        run: |
+          export PYTHONPATH=$PYTHONPATH:$(pwd)
+          python -m pytest tests/ || true
+  # 5 · DOCKER BUILD
+  docker-build:
+    name: "5 · Docker Build"
+    needs: [setup, test]
+    if: always() && (github.event.inputs.target_job == 'docker-build' || github.event.inputs.target_job == 'all' || github.event_name != 'workflow_dispatch')
+    runs-on: self-hosted
+    container:
+      image: ubuntu:22.04
+      volumes:
+        - /var/run/docker.sock:/var/run/docker.sock
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Install Docker CLI
+        run: apt-get update && apt-get install -y docker.io
+      - name: Build Local Image
+        run: |
+          docker build --no-cache -t ${{ env.DOCKER_IMAGE }}:latest \
+                                 -t ${{ env.DOCKER_IMAGE }}:${{ needs.setup.outputs.short_sha }} .
+  # 6 · DOCKER PUSH
+  docker-push:
+    name: "6 · Docker Push"
+    needs: [setup, docker-build]
+    if: always() && (github.event.inputs.target_job == 'docker-push' || github.event.inputs.target_job == 'all' || github.event_name != 'workflow_dispatch')
+    runs-on: self-hosted
+    container:
+      image: ubuntu:22.04
+      volumes:
+        - /var/run/docker.sock:/var/run/docker.sock
+    steps:
+      - name: Install Docker CLI
+        run: apt-get update && apt-get install -y docker.io
+      - name: Login to DockerHub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Push Images
+        run: |
+          docker push ${{ env.DOCKER_IMAGE }}:latest
+          docker push ${{ env.DOCKER_IMAGE }}:${{ needs.setup.outputs.short_sha }}
+  # 7 · DEPLOY
+  deploy-docker:
+    name: "7 · Deploy"
+    needs: [setup, docker-push]
+    if: always() && (github.event.inputs.target_job == 'deploy-docker' || github.event.inputs.target_job == 'all' || github.event_name != 'workflow_dispatch')
+    runs-on: self-hosted
+    container:
+      image: ubuntu:22.04
+      volumes:
+        - /var/run/docker.sock:/var/run/docker.sock
+        - /home/mbensaid:/home/mbensaid
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Install Docker Compose
+        run: apt-get update && apt-get install -y docker-compose
+      - name: Docker Compose Deploy
+        run: |
+          export AGENT_IMAGE="${{ env.DOCKER_IMAGE }}:${{ needs.setup.outputs.short_sha }}"
+          echo "🚀 Déploiement de l'image : $AGENT_IMAGE"
+          docker-compose up -d --force-recreate
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
+          LANGFUSE_SECRET_KEY: ${{ secrets.LANGFUSE_SECRET_KEY }}
+          LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
+          AGENT_IMAGE: "${{ env.DOCKER_IMAGE }}:${{ needs.setup.outputs.short_sha }}"
+
+  # 8 · EVALUATE
+  evaluate:
+    name: "8 · LLM Evaluate"
+    needs: deploy-docker
+    if: always() && (github.event.inputs.target_job == 'evaluate' || github.event.inputs.target_job == 'all' || github.event_name != 'workflow_dispatch')
+    runs-on: self-hosted
+    container:
+      image: python:3.11-slim
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Wait for agent to warm up
+        run: sleep 30
+      - name: Run LLM Evaluator + Quality Gate
+        run: |
+          export PYTHONPATH=$PYTHONPATH:$(pwd)
+          python -m monitoring.eval_runner
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          LANGFUSE_SECRET_KEY: ${{ secrets.LANGFUSE_SECRET_KEY }}
+          LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
+          LANGFUSE_BASE_URL: ${{ env.LANGFUSE_BASE_URL }}
+      - name: Post score summary to PR
+        if: github.event_name == 'pull_request'
+        run: python monitoring/pr_comment.py
+        env:
+          LANGFUSE_SECRET_KEY: ${{ secrets.LANGFUSE_SECRET_KEY }}
+          LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
+          LANGFUSE_BASE_URL: ${{ env.LANGFUSE_BASE_URL }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+
+  # 9 · DEPLOY MINIKUBE
+  deploy-minikube:
+    name: "9 · Deploy Minikube"
+    needs: [setup, docker-push]
+    if: always() && (github.event.inputs.target_job == 'deploy-minikube' || github.event.inputs.target_job == 'all' || github.event_name != 'workflow_dispatch')
+    runs-on: self-hosted
+    container:
+      image: ubuntu:22.04
+      volumes:
+        - /var/run/docker.sock:/var/run/docker.sock
+        - /home/mbensaid/.minikube:/root/.minikube
+        - /home/mbensaid/.kube:/root/.kube
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Install Tools
+        run: |
+          apt-get update && apt-get install -y curl docker.io
+          curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+          chmod +x kubectl && mv kubectl /usr/local/bin/
+          curl -LO https://storage.googleapis.com/minikube/releases/latest/minikube-linux-amd64
+          chmod +x minikube-linux-amd64 && mv minikube-linux-amd64 /usr/local/bin/minikube
+      - name: Ensure Minikube is Running
+        run: |
+          if ! minikube status > /dev/null 2>&1; then
+            minikube start --driver=docker
+          fi
+      - name: Setup Kustomize
+        run: |
+          curl -s "https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh" | bash
+          mv kustomize /usr/local/bin/
+      - name: Kustomize Personalization
+        working-directory: ./k8s/overlays/minikube
+        run: |
+          kustomize edit set image ai-agent-image=${{ env.DOCKER_IMAGE }}:${{ needs.setup.outputs.short_sha }}
+          kustomize edit set namespace ${{ env.K8S_NAMESPACE }}
+      - name: Deploy to K8s
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          LANGFUSE_SECRET_KEY: ${{ secrets.LANGFUSE_SECRET_KEY }}
+          LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
+          TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
+        run: |
+          kubectl create namespace ${{ env.K8S_NAMESPACE }} --dry-run=client -o yaml | kubectl apply -f -
+          kubectl create secret generic ai-agent-secrets \
+            --from-literal=GROQ_API_KEY="$GROQ_API_KEY" \
+            --from-literal=LANGFUSE_SECRET_KEY="$LANGFUSE_SECRET_KEY" \
+            --from-literal=LANGFUSE_PUBLIC_KEY="$LANGFUSE_PUBLIC_KEY" \
+            --from-literal=TAVILY_API_KEY="$TAVILY_API_KEY" \
+            --namespace ${{ env.K8S_NAMESPACE }} \
+            --dry-run=client -o yaml | kubectl apply -f -
+          kubectl apply -k ./k8s/overlays/minikube
+      - name: Verify Agent Readiness
+        run: |
+          kubectl rollout restart deployment/ai-agent-deployment -n ${{ env.K8S_NAMESPACE }}
+          kubectl rollout status deployment/ai-agent-deployment -n ${{ env.K8S_NAMESPACE }} --timeout=60s

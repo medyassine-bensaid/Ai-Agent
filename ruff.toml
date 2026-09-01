@@ -1,0 +1,8 @@
+[lint]
+select = ["E", "F", "W", "I"]
+ignore = ["E501"]  # line too long – handled by formatter
+
+[lint.per-file-ignores]
+"tests/*" = ["F401"]  # unused imports in test files are fine
+fixable = ["ALL"]
+unfixable = []
