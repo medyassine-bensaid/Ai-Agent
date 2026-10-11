@@ -5,8 +5,9 @@ Patches Langfuse SDK for ALL tests so no real network calls are made.
 Also seeds the required env vars so imports don't crash on missing keys.
 """
 import os
-import pytest
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 # ── 1. Seed dummy env vars BEFORE any import of config.settings ───────────────
 #    These only apply to the test process; they never touch the real environment.

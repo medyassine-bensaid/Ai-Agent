@@ -9,8 +9,9 @@ If scores tab stays empty → check your env vars / network.
 """
 import os
 from pathlib import Path
-from langfuse import Langfuse
+
 from dotenv import load_dotenv
+from langfuse import Langfuse
 
 # Load .env from project root
 env_path = Path(__file__).resolve().parent.parent / ".env"
@@ -41,5 +42,5 @@ with lf.start_as_current_observation(
     )
 
 lf.flush()
-print("[+] Score pushed. Check Langfuse → Scores tab for 'test/manual-score'.")
+print("[+] Score pushed. Check Langfuse -> Scores tab for 'test/manual-score'.")
 print(f"[+] Direct trace URL: {os.environ.get('LANGFUSE_BASE_URL','http://localhost:3000')}/traces/{trace_id}")

@@ -4,9 +4,9 @@ test_agent.py — Unit tests for the DevOps ReAct Agent.
 All Langfuse / network calls are patched globally via tests/conftest.py.
 Run:  pytest tests/ -v --cov=. --cov-report=term-missing
 """
-import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
+import pytest
 
 # ─── Config ───────────────────────────────────────────────────────────────────
 
@@ -21,19 +21,24 @@ def test_settings_has_langfuse_keys():
 def test_settings_validation_raises_on_missing_keys(monkeypatch):
     """settings.validate() must raise ValueError when a key is missing."""
     import importlib
+
     import config.settings as s
 
     monkeypatch.delenv("GROQ_API_KEY",       raising=False)
     monkeypatch.delenv("TAVILY_API_KEY",      raising=False)
     monkeypatch.delenv("LANGFUSE_SECRET_KEY", raising=False)
     monkeypatch.delenv("LANGFUSE_PUBLIC_KEY", raising=False)
+    # settings.py calls load_dotenv() on import; a developer's local .env would
+    # otherwise re-inject the keys deleted above and the test could not fail them
+    monkeypatch.setattr("dotenv.load_dotenv", lambda *a, **kw: False)
 
     importlib.reload(s)   # re-read env after monkeypatching
 
     with pytest.raises(ValueError, match="Missing required"):
         s.Settings.validate()
 
-    # Restore env for subsequent tests
+    # Restore env for subsequent tests (undo monkeypatch BEFORE reloading)
+    monkeypatch.undo()
     importlib.reload(s)
 
 
@@ -207,6 +212,7 @@ def test_router_pending_tool_returns_tool_execution():
 def test_router_tool_already_executed_returns_answer():
     """If an observation for the tool already exists in messages, go to answer."""
     from langchain_core.messages import AIMessage
+
     from agent.graph import should_continue
     state = {
         "iteration":       1,
@@ -240,7 +246,8 @@ def test_tool_execution_node_web_search():
 def test_tool_execution_node_knowledge_base():
     from agent.graph import tool_execution_node
 
-    with patch("agent.graph.knowledge_base_tool") as mock_kb:
+    # graph routes "knowledge_base" to the RAG tool (lazy import)
+    with patch("tools.rag_tool.rag_tool") as mock_kb:
         mock_kb.invoke.return_value = "Docker packages apps into containers."
         state = {
             "tool_calls":      [{"tool": "knowledge_base", "query": "docker basics", "reasoning": "x"}],

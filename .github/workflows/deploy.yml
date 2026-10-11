@@ -1,0 +1,154 @@
+# Deployment to the project's self-hosted runner (Docker Hub push, docker-compose
+# deploy, post-deploy quality gate, Minikube). Manual only: self-hosted runners
+# must never run code from pull requests of a public repository.
+# Run it on a commit whose "LLMOps CI/CD" workflow passed.
+name: Deploy (self-hosted)
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Deployment target"
+        required: true
+        default: docker
+        type: choice
+        options: [docker, minikube, all]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+env:
+  DOCKER_IMAGE: "${{ secrets.DOCKERHUB_USERNAME }}/devops-ai-agent"
+  K8S_NAMESPACE: "ai-agent-dev"
+
+jobs:
+  docker-push:
+    name: "1 · Build & push image"
+    runs-on: self-hosted
+    timeout-minutes: 45
+    container:
+      image: ubuntu:22.04
+      volumes:
+        - /var/run/docker.sock:/var/run/docker.sock
+    outputs:
+      short_sha: ${{ steps.sha.outputs.short_sha }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: sha
+        run: echo "short_sha=${GITHUB_SHA::8}" >> "$GITHUB_OUTPUT"
+        shell: bash
+      - name: Install Docker CLI
+        run: apt-get update && apt-get install -y docker.io
+      - name: Login to DockerHub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Build and push
+        shell: bash
+        run: |
+          docker build -t "$DOCKER_IMAGE:latest" -t "$DOCKER_IMAGE:${{ steps.sha.outputs.short_sha }}" .
+          docker push "$DOCKER_IMAGE:latest"
+          docker push "$DOCKER_IMAGE:${{ steps.sha.outputs.short_sha }}"
+
+  deploy-docker:
+    name: "2 · Deploy (docker compose)"
+    needs: docker-push
+    if: inputs.target == 'docker' || inputs.target == 'all'
+    runs-on: self-hosted
+    timeout-minutes: 20
+    container:
+      image: ubuntu:22.04
+      volumes:
+        - /var/run/docker.sock:/var/run/docker.sock
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Docker Compose
+        run: apt-get update && apt-get install -y docker-compose
+      - name: Docker Compose Deploy
+        run: docker-compose up -d --force-recreate
+        env:
+          AGENT_IMAGE: "${{ env.DOCKER_IMAGE }}:${{ needs.docker-push.outputs.short_sha }}"
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
+          LANGFUSE_SECRET_KEY: ${{ secrets.LANGFUSE_SECRET_KEY }}
+          LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
+
+  evaluate:
+    name: "3 · Post-deploy quality gate (Langfuse scores)"
+    needs: deploy-docker
+    runs-on: self-hosted
+    timeout-minutes: 15
+    container:
+      image: python:3.11-slim
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: pip install requests==2.* python-dotenv
+      - name: Quality gate (exit 2 if Langfuse unreachable / nothing scored)
+        run: python -m monitoring.eval_runner
+        env:
+          LANGFUSE_SECRET_KEY: ${{ secrets.LANGFUSE_SECRET_KEY }}
+          LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
+          LANGFUSE_BASE_URL: ${{ vars.LANGFUSE_BASE_URL || 'http://host.docker.internal:3000' }}
+          EVAL_WINDOW_HOURS: "24"
+
+  deploy-minikube:
+    name: "4 · Deploy Minikube"
+    needs: docker-push
+    if: inputs.target == 'minikube' || inputs.target == 'all'
+    runs-on: self-hosted
+    timeout-minutes: 30
+    container:
+      image: ubuntu:22.04
+      volumes:
+        - /var/run/docker.sock:/var/run/docker.sock
+        - ${{ vars.RUNNER_HOME }}/.minikube:/root/.minikube
+        - ${{ vars.RUNNER_HOME }}/.kube:/root/.kube
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Tools
+        run: |
+          apt-get update && apt-get install -y curl docker.io
+          curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+          chmod +x kubectl && mv kubectl /usr/local/bin/
+          curl -LO https://storage.googleapis.com/minikube/releases/latest/minikube-linux-amd64
+          chmod +x minikube-linux-amd64 && mv minikube-linux-amd64 /usr/local/bin/minikube
+      - name: Ensure Minikube is Running
+        run: |
+          if ! minikube status > /dev/null 2>&1; then
+            minikube start --driver=docker
+          fi
+      - name: Setup Kustomize
+        run: |
+          curl -s "https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh" | bash
+          mv kustomize /usr/local/bin/
+      - name: Kustomize Personalization
+        working-directory: ./k8s/overlays/minikube
+        run: |
+          kustomize edit set image ai-agent-image=${{ env.DOCKER_IMAGE }}:${{ needs.docker-push.outputs.short_sha }}
+          kustomize edit set namespace ${{ env.K8S_NAMESPACE }}
+      - name: Deploy to K8s
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          LANGFUSE_SECRET_KEY: ${{ secrets.LANGFUSE_SECRET_KEY }}
+          LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
+          TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
+        run: |
+          kubectl create namespace ${{ env.K8S_NAMESPACE }} --dry-run=client -o yaml | kubectl apply -f -
+          kubectl create secret generic ai-agent-secrets \
+            --from-literal=GROQ_API_KEY="$GROQ_API_KEY" \
+            --from-literal=LANGFUSE_SECRET_KEY="$LANGFUSE_SECRET_KEY" \
+            --from-literal=LANGFUSE_PUBLIC_KEY="$LANGFUSE_PUBLIC_KEY" \
+            --from-literal=TAVILY_API_KEY="$TAVILY_API_KEY" \
+            --namespace ${{ env.K8S_NAMESPACE }} \
+            --dry-run=client -o yaml | kubectl apply -f -
+          kubectl apply -k ./k8s/overlays/minikube
+      - name: Verify Agent Readiness
+        run: |
+          kubectl rollout restart deployment/ai-agent-deployment -n ${{ env.K8S_NAMESPACE }}
+          kubectl rollout status deployment/ai-agent-deployment -n ${{ env.K8S_NAMESPACE }} --timeout=180s

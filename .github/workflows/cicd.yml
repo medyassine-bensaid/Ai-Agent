@@ -7,257 +7,207 @@ on:
     branches: ["main", "master"]
   workflow_dispatch:
     inputs:
-      target_job:
-        description: 'Sélectionnez le job à tester'
-        required: true
-        default: 'all'
-        type: choice
-        options:
-          - all
-          - setup
-          - install
-          - lint
-          - test
-          - docker-build
-          - docker-push
-          - deploy-docker
-          - evaluate
-          - deploy-minikube
+      full_eval:
+        description: "Run all evaluation cases (default: critical cases only)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
-  PROJECT_NAME: "DevOps-AI-AGENT"
-  PROJECT_CATEGORY: "IA"
-  DOCKER_IMAGE: "${{ secrets.DOCKERHUB_USERNAME }}/devops-ai-agent"
-  LANGFUSE_BASE_URL: "http://localhost:3000"
   PYTHON_VERSION: "3.11"
-  K8S_NAMESPACE: "ai-agent-dev"
+  # CPU-only torch wheels (sentence-transformers) instead of ~2.5 GB of CUDA libs
+  PIP_EXTRA_INDEX_URL: "https://download.pytorch.org/whl/cpu"
+  # Upstream langfuse/langfuse commit whose docker-compose.yml is used for the
+  # ephemeral Langfuse v4 instance (same file as the local deployment)
+  LANGFUSE_COMPOSE_REF: "f75c661dbe8c6b85523c81486b39e8403ac2c141"
 
 jobs:
-  # 1 · SETUP
-  setup:
-    name: "1 · Setup"
-    if: github.event.inputs.target_job == 'setup' || github.event.inputs.target_job == 'all' || github.event_name != 'workflow_dispatch'
-    runs-on: self-hosted
-    container:
-      image: ubuntu:22.04
-    outputs:
-      short_sha: ${{ steps.get_sha.outputs.short_sha }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-      - name: Set Short SHA
-        id: get_sha
-        shell: bash
-        run: |
-          echo "short_sha=${GITHUB_SHA::8}" >> "$GITHUB_OUTPUT"
-  # 2 · INSTALL
-  install:
-    name: "2 · Install"
-    needs: setup
-    if: always() && (github.event.inputs.target_job == 'install' || github.event.inputs.target_job == 'all' || github.event_name != 'workflow_dispatch')
-    runs-on: self-hosted
-    container:
-      image: python:3.11-slim
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-      - name: Install Dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt ruff pytest
-  # 3 · LINT
+  # 1 · LINT ─────────────────────────────────────────────────────────────────
   lint:
-    name: "3 · Lint"
-    needs: install
-    if: always() && (github.event.inputs.target_job == 'lint' || github.event.inputs.target_job == 'all' || github.event_name != 'workflow_dispatch')
-    runs-on: self-hosted
-    container:
-      image: python:3.11-slim
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-      - name: Install Ruff
-        run: pip install ruff
-      - name: Run Ruff
-        run: |
-          python -m ruff check . --fix --unsafe-fixes
-          python -m ruff check .
-  # 4 · TEST
-  test:
-    name: "4 · Test"
-    needs: lint
-    if: always() && (github.event.inputs.target_job == 'test' || github.event.inputs.target_job == 'all' || github.event_name != 'workflow_dispatch')
-    runs-on: self-hosted
-    container:
-      image: python:3.11-slim
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-      - name: Install Dependencies
-        run: pip install -r requirements.txt pytest
-      - name: Run Pytest
-        env:
-          LANGFUSE_BASE_URL: ${{ env.LANGFUSE_BASE_URL }}
-          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-        run: |
-          export PYTHONPATH=$PYTHONPATH:$(pwd)
-          python -m pytest tests/ || true
-  # 5 · DOCKER BUILD
-  docker-build:
-    name: "5 · Docker Build"
-    needs: [setup, test]
-    if: always() && (github.event.inputs.target_job == 'docker-build' || github.event.inputs.target_job == 'all' || github.event_name != 'workflow_dispatch')
-    runs-on: self-hosted
-    container:
-      image: ubuntu:22.04
-      volumes:
-        - /var/run/docker.sock:/var/run/docker.sock
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-      - name: Install Docker CLI
-        run: apt-get update && apt-get install -y docker.io
-      - name: Build Local Image
-        run: |
-          docker build --no-cache -t ${{ env.DOCKER_IMAGE }}:latest \
-                                 -t ${{ env.DOCKER_IMAGE }}:${{ needs.setup.outputs.short_sha }} .
-  # 6 · DOCKER PUSH
-  docker-push:
-    name: "6 · Docker Push"
-    needs: [setup, docker-build]
-    if: always() && (github.event.inputs.target_job == 'docker-push' || github.event.inputs.target_job == 'all' || github.event_name != 'workflow_dispatch')
-    runs-on: self-hosted
-    container:
-      image: ubuntu:22.04
-      volumes:
-        - /var/run/docker.sock:/var/run/docker.sock
-    steps:
-      - name: Install Docker CLI
-        run: apt-get update && apt-get install -y docker.io
-      - name: Login to DockerHub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-      - name: Push Images
-        run: |
-          docker push ${{ env.DOCKER_IMAGE }}:latest
-          docker push ${{ env.DOCKER_IMAGE }}:${{ needs.setup.outputs.short_sha }}
-  # 7 · DEPLOY
-  deploy-docker:
-    name: "7 · Deploy"
-    needs: [setup, docker-push]
-    if: always() && (github.event.inputs.target_job == 'deploy-docker' || github.event.inputs.target_job == 'all' || github.event_name != 'workflow_dispatch')
-    runs-on: self-hosted
-    container:
-      image: ubuntu:22.04
-      volumes:
-        - /var/run/docker.sock:/var/run/docker.sock
-        - /home/mbensaid:/home/mbensaid
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-      - name: Install Docker Compose
-        run: apt-get update && apt-get install -y docker-compose
-      - name: Docker Compose Deploy
-        run: |
-          export AGENT_IMAGE="${{ env.DOCKER_IMAGE }}:${{ needs.setup.outputs.short_sha }}"
-          echo "🚀 Déploiement de l'image : $AGENT_IMAGE"
-          docker-compose up -d --force-recreate
-        env:
-          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-          TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
-          LANGFUSE_SECRET_KEY: ${{ secrets.LANGFUSE_SECRET_KEY }}
-          LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
-          AGENT_IMAGE: "${{ env.DOCKER_IMAGE }}:${{ needs.setup.outputs.short_sha }}"
-
-  # 8 · EVALUATE
-  evaluate:
-    name: "8 · LLM Evaluate"
-    needs: deploy-docker
-    if: always() && (github.event.inputs.target_job == 'evaluate' || github.event.inputs.target_job == 'all' || github.event_name != 'workflow_dispatch')
-    runs-on: self-hosted
-    container:
-      image: python:3.11-slim
+    name: "1 · Lint (ruff)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-      - name: Install dependencies
-        run: pip install -r requirements.txt
-      - name: Wait for agent to warm up
-        run: sleep 30
-      - name: Run LLM Evaluator + Quality Gate
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Install ruff (version pinned in requirements.lock)
+        run: pip install "$(grep -E '^ruff==' requirements.lock)"
+      - name: Ruff check (no auto-fix in CI)
+        run: ruff check . --output-format=github
+
+  # 2 · UNIT TESTS ───────────────────────────────────────────────────────────
+  test:
+    name: "2 · Unit tests"
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements.lock
+      - name: Install locked dependencies
+        run: pip install -r requirements.lock
+      - name: Pytest (deterministic; Groq/Tavily/Langfuse mocked)
         run: |
-          export PYTHONPATH=$PYTHONPATH:$(pwd)
-          python -m monitoring.eval_runner
-        env:
-          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-          LANGFUSE_SECRET_KEY: ${{ secrets.LANGFUSE_SECRET_KEY }}
-          LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
-          LANGFUSE_BASE_URL: ${{ env.LANGFUSE_BASE_URL }}
+          mkdir -p reports
+          python -m pytest tests/ --junitxml=reports/junit.xml \
+            --cov=. --cov-report=xml:reports/coverage.xml --cov-report=term
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-test-reports
+          path: reports/
+          if-no-files-found: warn
+
+  # 3 · DOCKER BUILD + SMOKE ─────────────────────────────────────────────────
+  docker-build:
+    name: "3 · Docker build + healthcheck"
+    needs: [lint, test]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image
+        run: docker build -t devops-agent:ci-${{ github.sha }} .
+      - name: Healthcheck and import smoke test inside the image
+        run: |
+          docker run --rm \
+            -e GROQ_API_KEY=ci-placeholder -e TAVILY_API_KEY=ci-placeholder \
+            -e LANGFUSE_PUBLIC_KEY=pk-lf-ci -e LANGFUSE_SECRET_KEY=sk-lf-ci \
+            -e LANGFUSE_BASE_URL=http://127.0.0.1:1 \
+            devops-agent:ci-${{ github.sha }} \
+            sh -c "python scripts/healthcheck.py && python -c 'import main, tools.rag_tool, monitoring.eval_runner; print(\"imports ok\")'"
+
+  # 4 · LIVE AGENT EVALUATION + LANGFUSE TELEMETRY ───────────────────────────
+  live-eval:
+    name: "4 · Live evaluation (Groq + Tavily + RAG + Langfuse)"
+    needs: [test]
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    permissions:
+      contents: read
+      pull-requests: write
+    env:
+      GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+      TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
+      LANGFUSE_BASE_URL: "http://localhost:3000"
+      EVAL_MIN_PASS_RATE: "0.8"
+    steps:
+      - name: Check API secrets
+        id: secrets
+        run: |
+          if [ -n "$GROQ_API_KEY" ] && [ -n "$TAVILY_API_KEY" ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.event_name }}" = "pull_request" ]; then
+            # Fork PRs do not receive secrets: report it, do not pretend to evaluate
+            echo "::warning::GROQ_API_KEY/TAVILY_API_KEY unavailable (fork PR) - live evaluation NOT run"
+            echo "available=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::GROQ_API_KEY and TAVILY_API_KEY repository secrets are required for the live evaluation"
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.secrets.outputs.available == 'true'
+
+      - name: Start ephemeral Langfuse v4 (headless init, throwaway keys)
+        if: steps.secrets.outputs.available == 'true'
+        run: |
+          mkdir -p /tmp/langfuse && cd /tmp/langfuse
+          curl -fsSL "https://raw.githubusercontent.com/langfuse/langfuse/${LANGFUSE_COMPOSE_REF}/docker-compose.yml" -o docker-compose.yml
+          PK="pk-lf-ci-$(openssl rand -hex 12)"; SK="sk-lf-ci-$(openssl rand -hex 16)"
+          echo "::add-mask::$SK"
+          {
+            echo "LANGFUSE_PUBLIC_KEY=$PK"; echo "LANGFUSE_SECRET_KEY=$SK"
+          } >> "$GITHUB_ENV"
+          cat > .env <<EOF
+          NEXTAUTH_SECRET=$(openssl rand -hex 32)
+          SALT=$(openssl rand -hex 16)
+          ENCRYPTION_KEY=$(openssl rand -hex 32)
+          LANGFUSE_INIT_ORG_ID=ci-org
+          LANGFUSE_INIT_ORG_NAME=CI
+          LANGFUSE_INIT_PROJECT_ID=ci-project
+          LANGFUSE_INIT_PROJECT_NAME=devops-agent-ci
+          LANGFUSE_INIT_PROJECT_PUBLIC_KEY=$PK
+          LANGFUSE_INIT_PROJECT_SECRET_KEY=$SK
+          EOF
+          sed -i 's/^ *//' .env
+          docker compose up -d
+          for i in $(seq 1 90); do
+            if curl -fs http://localhost:3000/api/public/health | grep -q '"OK"'; then
+              curl -s http://localhost:3000/api/public/health; echo; exit 0
+            fi
+            sleep 5
+          done
+          echo "::error::Langfuse did not become healthy"; docker compose ps; docker compose logs --tail 100; exit 1
+
+      - uses: actions/setup-python@v5
+        if: steps.secrets.outputs.available == 'true'
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements.lock
+
+      - name: Install locked dependencies
+        if: steps.secrets.outputs.available == 'true'
+        run: pip install -r requirements.lock
+
+      - name: Cache embedding model
+        if: steps.secrets.outputs.available == 'true'
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-all-MiniLM-L6-v2-v1
+
+      # Groq free tier allows 200k tokens/day for gpt-oss-120b; the full suite uses a large
+      # share of that, so pushes/PRs run the must-pass cases and the full suite is manual.
+      - name: Run end-to-end evaluation suite (exit 1 = gate failed)
+        if: steps.secrets.outputs.available == 'true'
+        run: |
+          if [ "${{ inputs.full_eval }}" = "true" ]; then
+            python -m evals.run_eval
+          else
+            python -m evals.run_eval --critical-only
+          fi
+
+      - name: Quality gate over the recorded Langfuse scores
+        if: steps.secrets.outputs.available == 'true'
+        run: python -m monitoring.eval_runner
+
+      - name: Publish evaluation summary
+        if: always() && steps.secrets.outputs.available == 'true'
+        run: |
+          if [ -f reports/eval_report.md ]; then cat reports/eval_report.md >> "$GITHUB_STEP_SUMMARY"; \
+          else echo "No evaluation report produced" >> "$GITHUB_STEP_SUMMARY"; fi
+
+      - name: Upload evaluation report
+        if: always() && steps.secrets.outputs.available == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-report
+          path: reports/
+          if-no-files-found: warn
+
       - name: Post score summary to PR
-        if: github.event_name == 'pull_request'
-        run: python monitoring/pr_comment.py
+        if: github.event_name == 'pull_request' && steps.secrets.outputs.available == 'true'
+        continue-on-error: true
+        run: python -m monitoring.pr_comment
         env:
-          LANGFUSE_SECRET_KEY: ${{ secrets.LANGFUSE_SECRET_KEY }}
-          LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
-          LANGFUSE_BASE_URL: ${{ env.LANGFUSE_BASE_URL }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
 
-  # 9 · DEPLOY MINIKUBE
-  deploy-minikube:
-    name: "9 · Deploy Minikube"
-    needs: [setup, docker-push]
-    if: always() && (github.event.inputs.target_job == 'deploy-minikube' || github.event.inputs.target_job == 'all' || github.event_name != 'workflow_dispatch')
-    runs-on: self-hosted
-    container:
-      image: ubuntu:22.04
-      volumes:
-        - /var/run/docker.sock:/var/run/docker.sock
-        - /home/mbensaid/.minikube:/root/.minikube
-        - /home/mbensaid/.kube:/root/.kube
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-      - name: Install Tools
-        run: |
-          apt-get update && apt-get install -y curl docker.io
-          curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
-          chmod +x kubectl && mv kubectl /usr/local/bin/
-          curl -LO https://storage.googleapis.com/minikube/releases/latest/minikube-linux-amd64
-          chmod +x minikube-linux-amd64 && mv minikube-linux-amd64 /usr/local/bin/minikube
-      - name: Ensure Minikube is Running
-        run: |
-          if ! minikube status > /dev/null 2>&1; then
-            minikube start --driver=docker
-          fi
-      - name: Setup Kustomize
-        run: |
-          curl -s "https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh" | bash
-          mv kustomize /usr/local/bin/
-      - name: Kustomize Personalization
-        working-directory: ./k8s/overlays/minikube
-        run: |
-          kustomize edit set image ai-agent-image=${{ env.DOCKER_IMAGE }}:${{ needs.setup.outputs.short_sha }}
-          kustomize edit set namespace ${{ env.K8S_NAMESPACE }}
-      - name: Deploy to K8s
-        env:
-          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-          LANGFUSE_SECRET_KEY: ${{ secrets.LANGFUSE_SECRET_KEY }}
-          LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
-          TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
-        run: |
-          kubectl create namespace ${{ env.K8S_NAMESPACE }} --dry-run=client -o yaml | kubectl apply -f -
-          kubectl create secret generic ai-agent-secrets \
-            --from-literal=GROQ_API_KEY="$GROQ_API_KEY" \
-            --from-literal=LANGFUSE_SECRET_KEY="$LANGFUSE_SECRET_KEY" \
-            --from-literal=LANGFUSE_PUBLIC_KEY="$LANGFUSE_PUBLIC_KEY" \
-            --from-literal=TAVILY_API_KEY="$TAVILY_API_KEY" \
-            --namespace ${{ env.K8S_NAMESPACE }} \
-            --dry-run=client -o yaml | kubectl apply -f -
-          kubectl apply -k ./k8s/overlays/minikube
-      - name: Verify Agent Readiness
-        run: |
-          kubectl rollout restart deployment/ai-agent-deployment -n ${{ env.K8S_NAMESPACE }}
-          kubectl rollout status deployment/ai-agent-deployment -n ${{ env.K8S_NAMESPACE }} --timeout=60s
+      - name: Langfuse logs on failure
+        if: failure() && steps.secrets.outputs.available == 'true'
+        run: cd /tmp/langfuse && docker compose logs --tail 150 langfuse-web langfuse-worker

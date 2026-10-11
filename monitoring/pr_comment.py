@@ -1,59 +1,36 @@
 #!/usr/bin/env python3
 """
 Post a PR comment summarising the latest Langfuse quality scores.
-Uses the Langfuse REST API (compatible with self-hosted v4.5.1).
+Uses the Langfuse v4 read APIs (see monitoring/langfuse_api.py).
 """
-import os, sys, base64, requests
+import os
 from datetime import datetime, timedelta, timezone
 
-def _auth_headers():
-    public_key = os.environ["LANGFUSE_PUBLIC_KEY"]
-    secret_key = os.environ["LANGFUSE_SECRET_KEY"]
-    credentials = f"{public_key}:{secret_key}"
-    encoded = base64.b64encode(credentials.encode()).decode()
-    return {
-        "Authorization": f"Basic {encoded}",
-        "Content-Type": "application/json",
-    }
+import requests
+
+from monitoring import langfuse_api
+
+SHOWN = ("heuristic/quality", "llm-judge/relevance", "llm-judge/faithfulness")
+
 
 def main():
-    base_url = os.environ.get("LANGFUSE_BASE_URL", "http://localhost:3000")
-    headers = _auth_headers()
-
-    # Fetch recent traces
     since = datetime.now(timezone.utc) - timedelta(hours=1)
-    since_ms = int(since.timestamp() * 1000)
-    traces_url = f"{base_url}/api/public/traces"
-    params = {
-        "fromTimestamp": since_ms,
-        "limit": 5,
-        "orderBy": "createdAt",
-        "order": "desc",
-    }
-    resp = requests.get(traces_url, params=params, headers=headers, timeout=10)
-    resp.raise_for_status()
-    traces = resp.json().get("data", [])
-
-    if not traces:
+    runs = langfuse_api.list_agent_runs(since, max_items=5)
+    if not runs:
         print("No recent traces found, skipping PR comment.")
         return
 
-    # Build comment table
-    lines = ["## 🤖 LLM Eval Scores", "| Trace | Score |", "|---|---|"]
-    for t in traces:
-        trace_id = t["id"]
-        scores_url = f"{base_url}/api/public/traces/{trace_id}/scores"
-        try:
-            s_resp = requests.get(scores_url, headers=headers, timeout=10)
-            s_resp.raise_for_status()
-            scores = s_resp.json().get("data", [])
-        except Exception:
-            continue
+    trace_ids = [r["traceId"] for r in runs]
+    by_trace = {}
+    for sc in langfuse_api.list_scores(trace_ids=trace_ids):
+        by_trace.setdefault(langfuse_api.score_trace_id(sc), {})[sc["name"]] = sc["value"]
 
-        for sc in scores:
-            if sc.get("name") == "heuristic/quality":
-                lines.append(f"| {trace_id[:8]} | {sc['value']:.2f} |")
-                break   # only one row per trace
+    lines = ["## LLM Eval Scores", "| Trace | " + " | ".join(SHOWN) + " |",
+             "|---|" + "---|" * len(SHOWN)]
+    for tid in trace_ids:
+        vals = by_trace.get(tid, {})
+        cells = [f"{vals[n]:.2f}" if isinstance(vals.get(n), (int, float)) else "n/a" for n in SHOWN]
+        lines.append(f"| {tid[:8]} | " + " | ".join(cells) + " |")
 
     body = "\n".join(lines)
     repo = os.environ["GITHUB_REPOSITORY"]
@@ -67,6 +44,7 @@ def main():
         json={"body": body},
         timeout=10,
     )
+    resp.raise_for_status()
     print(f"PR comment posted, status: {resp.status_code}")
 
 if __name__ == "__main__":

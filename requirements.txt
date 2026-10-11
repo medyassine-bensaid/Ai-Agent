@@ -9,7 +9,7 @@ pydantic==2.10.3
 colorama==0.4.6
 
 # Observability
-langfuse>=2.58.0
+langfuse>=4.16,<5   # code uses v4 API (get_client, propagate_attributes)
 
 # RAG
 chromadb>=0.5.0
@@ -17,6 +17,10 @@ sentence-transformers>=2.7.0
 
 # LLM-as-a-Judge
 openai>=1.30.0
+
+# Monitoring exporter (monitoring/langfuse_exporter.py)
+prometheus_client>=0.20,<1
+requests>=2.31,<3
 
 # Testing
 pytest==8.3.3

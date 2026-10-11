@@ -9,16 +9,16 @@ Stack:
 - Langfuse span instrumentation for retrieval observability
 """
 
-import os
 import hashlib
+import os
 from pathlib import Path
-from typing import List, Dict
+from typing import Dict, List
 
 import chromadb
 from chromadb.config import Settings as ChromaSettings
-from sentence_transformers import SentenceTransformer
 from langchain_core.tools import tool
-from langfuse import observe, get_client
+from langfuse import get_client, observe
+from sentence_transformers import SentenceTransformer
 
 from utils.logger import logger
 
@@ -30,6 +30,9 @@ EMBED_MODEL   = "all-MiniLM-L6-v2"
 CHUNK_SIZE    = 400   # chars
 CHUNK_OVERLAP = 80
 TOP_K         = 4
+# Chunks below this cosine similarity are dropped so off-topic questions do not
+# get unrelated context injected into the answer prompt
+MIN_SCORE     = float(os.getenv("RAG_MIN_SCORE", "0.3"))
 
 langfuse = get_client()
 
@@ -82,12 +85,14 @@ def ingest_text(text: str, source: str = "manual") -> int:
     if not chunks:
         return 0
 
-    existing_ids = set(col.get(ids=[c["id"] for c in chunks])["ids"])
-    new = [c for c in chunks if c["id"] not in existing_ids]
+    existing = col.get(ids=[c["id"] for c in chunks], include=["documents"])
+    stored = dict(zip(existing["ids"], existing["documents"]))
+    # New chunks, plus chunks whose text changed since the last ingestion
+    new = [c for c in chunks if stored.get(c["id"]) != c["text"]]
     if not new:
         return 0
 
-    col.add(
+    col.upsert(
         ids        = [c["id"]      for c in new],
         documents  = [c["text"]    for c in new],
         embeddings = embedder.encode([c["text"] for c in new]).tolist(),
@@ -105,7 +110,7 @@ def ingest_file(path: str) -> int:
 
 def ingest_builtin_kb():
     """Seed ChromaDB from the existing DEVOPS_KNOWLEDGE dict (one-time)."""
-    from agent.knowledge_base import DEVOPS_KNOWLEDGE
+    from tools.knowledge_base import DEVOPS_KNOWLEDGE
     total = 0
     for topic, content in DEVOPS_KNOWLEDGE.items():
         total += ingest_text(content, source=f"kb:{topic}")
@@ -114,7 +119,7 @@ def ingest_builtin_kb():
 
 
 # ── Retrieval ────────────────────────────────────────────────────────────────
-@observe(name="rag-retrieval")
+@observe(name="rag-retrieval", as_type="retriever")
 def _retrieve(query: str) -> List[Dict]:
     col      = _get_collection()
     embedder = _get_embedder()
@@ -129,15 +134,20 @@ def _retrieve(query: str) -> List[Dict]:
         results["metadatas"][0],
         results["distances"][0],
     ):
+        score = round(1 - dist, 3)  # cosine distance -> similarity
+        if score < MIN_SCORE:
+            continue
         docs.append({"text": doc, "source": meta.get("source","?"),
-                     "score": round(1 - dist, 3)})  # cosine → similarity
+                     "chunk_id": meta.get("start"), "score": score})
 
-    # Log retrieval metadata to Langfuse span
-    langfuse.trace(
-        name="rag-retrieval-meta",
-        metadata={"query": query, "num_docs": len(docs),
-                  "top_score": docs[0]["score"] if docs else 0},
-    )
+    # Attach retrieval metadata to the current @observe span (SDK v4 has no .trace())
+    try:
+        langfuse.update_current_span(
+            metadata={"query": query, "num_docs": len(docs), "min_score": MIN_SCORE,
+                      "top_score": docs[0]["score"] if docs else 0},
+        )
+    except Exception as e:
+        logger.log_error(f"Langfuse span update failed: {e}")
     return docs
 
 
@@ -162,7 +172,8 @@ def rag_tool(query: str) -> str:
 
     docs = _retrieve(query)
     if not docs:
-        return f"No relevant documentation found for '{query}'. Try web_search."
+        return (f"No relevant documentation found in the knowledge base for '{query}' "
+                f"(no chunk scored >= {MIN_SCORE}).")
 
     output = f"Retrieved {len(docs)} relevant chunks:\n\n"
     for i, d in enumerate(docs, 1):

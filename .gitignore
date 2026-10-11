@@ -36,3 +36,7 @@ htmlcov/
 *.swp
 *.swo
 .DS_Store
+
+# Local data and generated artifacts
+data/
+reports/

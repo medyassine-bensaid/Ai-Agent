@@ -1,24 +1,19 @@
 #!/usr/bin/env python3
 """
-langfuse_exporter.py — Prometheus exporter for Langfuse scores.
-Fetches the most recent scores via /api/public/scores and exposes averages.
-Compatible with self-hosted Langfuse v4.5.1.
+langfuse_exporter.py - Prometheus exporter for Langfuse scores.
+Reads recent scores via the v3 scores API (Langfuse v4; the legacy
+/api/public/scores endpoint is not available in v4 events_only mode)
+and exposes their averages.
 """
-import os, time, base64
-import requests
-from prometheus_client import start_http_server, Gauge
+import os
+import time
+from datetime import datetime, timedelta, timezone
 
-BASE_URL = os.environ.get("LANGFUSE_BASE_URL", "http://localhost:3000")
-PUBLIC_KEY = os.environ["LANGFUSE_PUBLIC_KEY"]
-SECRET_KEY = os.environ["LANGFUSE_SECRET_KEY"]
+from prometheus_client import Gauge, start_http_server
 
-def _auth_headers():
-    credentials = f"{PUBLIC_KEY}:{SECRET_KEY}"
-    encoded = base64.b64encode(credentials.encode()).decode()
-    return {
-        "Authorization": f"Basic {encoded}",
-        "Content-Type": "application/json",
-    }
+from monitoring import langfuse_api
+
+WINDOW_HOURS = float(os.environ.get("EXPORTER_WINDOW_HOURS", "24"))
 
 g_relevance    = Gauge("llm_judge_relevance",    "LLM judge relevance score")
 g_faithfulness = Gauge("llm_judge_faithfulness", "LLM judge faithfulness score")
@@ -37,15 +32,10 @@ SCORE_MAP = {
 }
 
 def collect():
-    headers = _auth_headers()
-    scores_url = f"{BASE_URL}/api/public/scores"
-
-    # Fetch first page with maximum allowed limit (test showed limit=100 works)
-    params = {"page": 1, "limit": 100}
+    """Average the scores of the last EXPORTER_WINDOW_HOURS (v3 scores API)."""
+    since = datetime.now(timezone.utc) - timedelta(hours=WINDOW_HOURS)
     print("[exporter] Fetching scores...")
-    resp = requests.get(scores_url, params=params, headers=headers, timeout=10)
-    resp.raise_for_status()
-    scores_list = resp.json().get("data", [])
+    scores_list = langfuse_api.list_scores(since=since, max_items=5000)
     print(f"[exporter] Fetched {len(scores_list)} scores")
     g_scores_total.set(len(scores_list))
 
@@ -55,10 +45,12 @@ def collect():
     for sc in scores_list:
         name = sc.get("name")
         value = sc.get("value")
+        if isinstance(value, bool):
+            value = 1.0 if value else 0.0
         if name in buckets:
             buckets[name].append(value)
         if name == "has-error":
-            errors.append(1 - value)
+            errors.append(value)   # 1 = error answer
 
     for name, gauge in SCORE_MAP.items():
         vals = buckets[name]

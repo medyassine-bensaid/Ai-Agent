@@ -1,0 +1,22 @@
+# Never bake secrets, local envs or local data into the image
+.env
+.env.*
+venv/
+.venv/
+.git/
+.github/
+.qodo/
+.idea/
+.vscode/
+data/
+**/__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+k8s/
+*.log
+reports/
+evals/
+tests/
