@@ -5,10 +5,10 @@ WORKDIR /build
 # Install build deps
 RUN apt-get update && apt-get install -y --no-install-recommends gcc && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt .
+COPY requirements.lock .
 # CPU-only torch wheels (sentence-transformers) instead of ~2.5 GB of CUDA libs
 RUN pip install --no-cache-dir --prefix=/install \
-    --extra-index-url https://download.pytorch.org/whl/cpu -r requirements.txt
+    --extra-index-url https://download.pytorch.org/whl/cpu -r requirements.lock
 
 FROM python:3.11-slim AS runtime
 
