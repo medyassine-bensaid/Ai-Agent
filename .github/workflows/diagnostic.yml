@@ -1,0 +1,9 @@
+name: Diagnostic
+on:
+  push:
+  workflow_dispatch:
+jobs:
+  hello:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Actions is running for $GITHUB_REPOSITORY at $GITHUB_SHA"
