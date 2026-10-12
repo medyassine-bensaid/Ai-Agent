@@ -94,6 +94,10 @@ def web_search_tool(query: str) -> str:
         return formatted_results
 
     except Exception as e:
-        error_msg = f"Web search failed: {str(e)}"
+        # Re-raise so the LangChain callback records this TOOL observation at ERROR
+        # level in Langfuse (returning the text made failures look successful in
+        # traces and in the "Tool Errors" dashboard). tool_execution_node turns the
+        # exception into an observation that says no evidence is available.
+        error_msg = f"Web search failed: {e}"
         logger.log_error(error_msg)
-        return error_msg
+        raise RuntimeError(error_msg) from e

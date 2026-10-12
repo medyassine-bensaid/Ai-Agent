@@ -350,9 +350,30 @@ def test_web_search_tool_reports_timeout_as_failure(monkeypatch):
         ws.requests, "post", MagicMock(side_effect=requests.Timeout("read timed out"))
     )
     monkeypatch.setattr(ws, "tavily_search", ws.make_tavily_search("tvly-test"))
-    out = ws.web_search_tool.invoke({"query": "helm latest"})
-    assert "Web search failed" in out
-    assert "read timed out" in out  # real cause, not "'str' object has no attribute"
+    with pytest.raises(RuntimeError) as exc:
+        ws.web_search_tool.invoke({"query": "helm latest"})
+    assert "Web search failed" in str(exc.value)
+    assert "read timed out" in str(
+        exc.value
+    )  # real cause, not "'str' object has no attribute"
+
+
+def test_failed_web_search_is_reported_to_tracing_as_tool_error():
+    """Langfuse 'Tool Errors by Tool' was empty although searches failed: the tool
+    returned error text, so the callback recorded a successful tool run."""
+    from unittest.mock import MagicMock as MM
+
+    import tools.web_search as ws
+
+    handler = MM()
+    handler.raise_error = False
+    handler.ignore_agent = False
+    with patch.object(ws, "tavily_search") as tavily:
+        tavily.invoke.side_effect = Exception("HTTP 401")
+        with pytest.raises(RuntimeError):
+            ws.web_search_tool.invoke({"query": "q"}, config={"callbacks": [handler]})
+    called = {c[0] for c in handler.method_calls}
+    assert "on_tool_error" in called and "on_tool_end" not in called
 
 
 # ─── Groq tool_use_failed (gpt-oss emits a native tool call) is recovered ────

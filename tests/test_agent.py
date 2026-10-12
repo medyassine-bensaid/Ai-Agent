@@ -211,13 +211,26 @@ def test_web_search_handles_empty_results():
 
 
 def test_web_search_handles_tool_exception():
+    """A failed search raises (so tracing marks it ERROR); the graph node turns it into
+    an error observation instead of crashing the agent."""
+    from agent.graph import tool_execution_node
     from tools.web_search import web_search_tool
 
     with patch("tools.web_search.tavily_search") as mock_tavily:
         mock_tavily.invoke.side_effect = Exception("network error")
-        result = web_search_tool.invoke({"query": "any query"})
+        with pytest.raises(RuntimeError, match="Web search failed: network error"):
+            web_search_tool.invoke({"query": "any query"})
+        state = {
+            "tool_calls": [
+                {"tool": "web_search", "query": "any query", "reasoning": "x"}
+            ],
+            "messages": [],
+            "ready_to_answer": False,
+        }
+        result = tool_execution_node(state)
 
-    assert "failed" in result.lower() or "error" in result.lower()
+    content = result["messages"][-1].content
+    assert "network error" in content and "Do not cite any source" in content
 
 
 # ─── Graph routing ────────────────────────────────────────────────────────────
