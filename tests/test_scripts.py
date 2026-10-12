@@ -75,3 +75,56 @@ def test_healthcheck_passes_with_keys():
     with pytest.raises(SystemExit) as exc:
         healthcheck.check()
     assert exc.value.code == 0
+
+
+audit_summary = _load("audit_summary", "scripts/audit_summary.py")
+
+AUDIT = {
+    "dependencies": [
+        {"name": "requests", "version": "2.34.2", "vulns": []},
+        {
+            "name": "langchain-core",
+            "version": "0.3.63",
+            "vulns": [
+                {"id": "PYSEC-1", "fix_versions": ["0.3.81"]},
+                {"id": "PYSEC-2", "fix_versions": ["0.3.85"]},
+            ],
+        },
+        {
+            "name": "chromadb",
+            "version": "1.5.9",
+            "vulns": [{"id": "PYSEC-3", "fix_versions": []}],
+        },
+    ]
+}
+
+
+def test_audit_summary_table_and_annotations(tmp_path, capsys):
+    import json
+
+    f = tmp_path / "audit.json"
+    f.write_text(json.dumps(AUDIT))
+    assert (
+        audit_summary.main([str(f), "--output", str(tmp_path / "a.md"), "--annotate"])
+        == 0
+    )
+    md = (tmp_path / "a.md").read_text()
+    assert "**3 known vulnerabilities in 2 packages.**" in md
+    assert "| langchain-core | 0.3.63 | PYSEC-1, PYSEC-2 | 0.3.81, 0.3.85 |" in md
+    assert "| chromadb | 1.5.9 | PYSEC-3 | no fix |" in md
+    out = capsys.readouterr().out
+    assert "::warning title=Vulnerable dependency langchain-core 0.3.63::" in out
+
+
+def test_audit_summary_clean_and_unreadable_reports(tmp_path, capsys):
+    import json
+
+    clean = tmp_path / "clean.json"
+    clean.write_text(
+        json.dumps({"dependencies": [{"name": "x", "version": "1", "vulns": []}]})
+    )
+    assert audit_summary.main([str(clean)]) == 0
+    assert "No known vulnerabilities" in capsys.readouterr().out
+    assert (
+        audit_summary.main([str(tmp_path / "missing.json")]) == 0
+    )  # advisory: never blocks

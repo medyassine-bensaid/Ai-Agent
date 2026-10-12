@@ -1,5 +1,6 @@
 import atexit
 import json
+import re
 from typing import Literal
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
@@ -7,6 +8,7 @@ from langchain_groq import ChatGroq
 from langfuse import get_client, observe
 from langgraph.graph import END, StateGraph
 
+from agent.grounding import strip_ungrounded_urls
 from agent.prompts import FINAL_ANSWER_PROMPT, REACT_PROMPT, SYSTEM_PROMPT
 from agent.state import AgentState, ToolCall
 from config.settings import settings
@@ -27,6 +29,38 @@ llm = ChatGroq(
     max_tokens=settings.MAX_TOKENS,
     max_retries=settings.LLM_MAX_RETRIES,
 )
+
+# Observations that carry no usable evidence (tool failed or found nothing)
+_FAILED_OBSERVATION_PREFIXES = (
+    "Web search failed",
+    "No results found",
+    "No relevant documentation",
+    "Tool '",
+)
+NO_EVIDENCE_NOTE = (
+    "\n(No usable results from this tool. Do not cite any source or URL for it; "
+    "say that the information could not be retrieved.)"
+)
+
+
+_EXPLICIT_TOOL_PATTERNS = {
+    "knowledge_base": re.compile(
+        r"\b(knowledge[- ]base|internal (docs?|documentation|notes))\b", re.I
+    ),
+    "web_search": re.compile(
+        r"\b(search the (web|internet)|from the (web|internet)|on the (web|internet)|"
+        r"web search|look it up online)\b",
+        re.I,
+    ),
+}
+
+
+def explicit_tool_requests(query: str) -> list:
+    """Tools the user explicitly asked for, in a stable order."""
+    return [
+        tool for tool, rx in _EXPLICIT_TOOL_PATTERNS.items() if rx.search(query or "")
+    ]
+
 
 # Native tool names the model may emit -> agent actions
 _NATIVE_TOOL_ACTIONS = {
@@ -141,6 +175,20 @@ def reasoning_node(state: AgentState) -> AgentState:
         action = decision["action"]
         search_query = decision.get("search_query")
 
+        # Honour explicit user instructions ("use the knowledge base", "search the web")
+        # the model sometimes skips when a question needs two sources
+        if action == "answer_directly":
+            used = {tc["tool"] for tc in state["tool_calls"]}
+            missing = [
+                t for t in explicit_tool_requests(state["query"]) if t not in used
+            ]
+            if missing:
+                action = f"use_{missing[0]}"
+                search_query = state["query"][:200]
+                reasoning += (
+                    f" [user explicitly asked for {missing[0]}, consulting it first]"
+                )
+
         logger.log_thought(f"{reasoning} → Action: {action}")
 
         # Update state with structured output
@@ -247,6 +295,10 @@ def tool_execution_node(state: AgentState) -> AgentState:
                 f"Tool '{tool_name}' returned no useful information for query '{query}'"
             )
 
+        if observation.startswith(_FAILED_OBSERVATION_PREFIXES):
+            # Make the absence of evidence explicit so the answer cannot "fill in" sources
+            observation += NO_EVIDENCE_NOTE
+
         logger.log_observation(observation)
 
         # Store observation in messages
@@ -265,7 +317,9 @@ def tool_execution_node(state: AgentState) -> AgentState:
 
         # Store error as observation
         state["messages"].append(
-            AIMessage(content=f"Tool: {tool_name}\nQuery: {query}\nError: {error_msg}")
+            AIMessage(
+                content=f"Tool: {tool_name}\nQuery: {query}\nError: {error_msg}{NO_EVIDENCE_NOTE}"
+            )
         )
 
         # Even on failure, proceed to answer (agent will acknowledge limitation)
@@ -309,7 +363,20 @@ def answer_node(state: AgentState) -> AgentState:
 
     try:
         response = llm.invoke(messages)
-        final_answer = response.content
+        evidence = [m.content for m in state["messages"] if isinstance(m, AIMessage)]
+        final_answer, removed = strip_ungrounded_urls(
+            response.content, state["query"], *evidence
+        )
+        if removed:
+            logger.log_error(
+                f"Removed {len(removed)} URL(s) not present in tool evidence"
+            )
+            try:
+                langfuse.update_current_span(
+                    metadata={"ungrounded_urls_removed": removed}
+                )
+            except Exception:
+                pass
 
         logger.log_response(final_answer)
 

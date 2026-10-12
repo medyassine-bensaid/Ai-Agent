@@ -330,7 +330,9 @@ def test_tavily_request_has_timeout(monkeypatch):
 
     resp = MagicMock()
     resp.json.return_value = {
-        "results": [{"url": "https://example.com/a", "content": "c"}]
+        "results": [  # same shape as a real Tavily /search response
+            {"title": "t", "url": "https://example.com/a", "content": "c", "score": 0.9}
+        ]
     }
     post = MagicMock(return_value=resp)
     monkeypatch.setattr(ws.requests, "post", post)
@@ -405,3 +407,122 @@ def test_answer_node_error_does_not_expose_provider_details():
     assert "org_01SECRET" not in out["final_answer"]
     assert "console.groq.com" not in out["final_answer"]
     assert "I apologize" in out["final_answer"]  # still detected as an error answer
+
+
+# ─── CI run 38214006584 findings ─────────────────────────────────────────────
+
+
+def test_guardrail_removes_urls_not_in_evidence():
+    from agent.grounding import UNVERIFIED, strip_ungrounded_urls
+
+    evidence = "1. Helm 4.3.0 released. Source: https://github.com/helm/helm/releases/tag/v4.3.0"
+    answer = (
+        "Helm 4.3.0 (https://github.com/helm/helm/releases/tag/v4.3.0). "
+        "Docs: https://helm.sh/docs."
+    )
+    cleaned, removed = strip_ungrounded_urls(answer, "latest helm?", evidence)
+    assert removed == ["https://helm.sh/docs"]
+    assert "https://github.com/helm/helm/releases/tag/v4.3.0" in cleaned
+    assert f"Docs: {UNVERIFIED}." in cleaned
+
+
+def test_guardrail_keeps_urls_from_the_user_question():
+    from agent.grounding import strip_ungrounded_urls
+
+    cleaned, removed = strip_ungrounded_urls(
+        "Your link https://example.com/runbook is fine.",
+        "check https://example.com/runbook",
+    )
+    assert removed == [] and "https://example.com/runbook" in cleaned
+
+
+def test_answer_node_strips_fabricated_urls_after_failed_search():
+    """ROB-02: search failed, model still cited helm.sh."""
+    from agent import graph
+
+    failed = AIMessage(
+        content="Tool: web_search\nQuery: helm\nResult:\nWeb search failed: HTTPError 400"
+    )
+    with patch.object(graph, "llm") as llm:
+        llm.invoke.return_value = _llm_reply(
+            "Latest Helm: see https://helm.sh and https://github.com/helm/helm/releases"
+        )
+        out = graph.answer_node(_state(thought="t", messages=[failed]))
+    assert "helm.sh" not in out["final_answer"]
+    assert "github.com/helm" not in out["final_answer"]
+
+
+def test_failed_tool_observation_says_there_is_no_evidence():
+    from agent import graph
+
+    with patch.object(graph, "web_search_tool") as ws:
+        ws.invoke.return_value = "Web search failed: HTTPError 400"
+        state = {
+            "tool_calls": [{"tool": "web_search", "query": "helm", "reasoning": "x"}],
+            "messages": [],
+            "ready_to_answer": False,
+        }
+        out = graph.tool_execution_node(state)
+    assert "Do not cite any source or URL" in out["messages"][-1].content
+
+
+@pytest.mark.parametrize(
+    "query,expected",
+    [
+        (
+            "Using your knowledge base, explain Kubernetes, and the latest release from the web.",
+            ["knowledge_base", "web_search"],
+        ),
+        (
+            "According to the internal knowledge base, what is CI/CD?",
+            ["knowledge_base"],
+        ),
+        ("What is the latest Helm release?", []),
+        ("What is Docker?", []),
+    ],
+)
+def test_explicit_tool_requests(query, expected):
+    from agent.graph import explicit_tool_requests
+
+    assert explicit_tool_requests(query) == expected
+
+
+def test_explicitly_requested_kb_is_consulted_before_answering():
+    """BOTH-01: model answered after web search only, skipping the requested knowledge base."""
+    from agent import graph
+
+    query = "Using your knowledge base, explain Kubernetes, and the latest release from the web."
+    state = _state(
+        query=query,
+        tool_calls=[
+            {"tool": "web_search", "query": "latest kubernetes", "reasoning": "x"}
+        ],
+        messages=[
+            AIMessage(
+                content="Tool: web_search\nQuery: latest kubernetes\nResult:\n1.37"
+            )
+        ],
+    )
+    decision = (
+        '{"reasoning":"enough info","action":"answer_directly","search_query":null}'
+    )
+    with patch.object(graph, "llm") as llm:
+        llm.invoke.return_value = _llm_reply(decision)
+        out = graph.reasoning_node(state)
+    assert [tc["tool"] for tc in out["tool_calls"]] == ["web_search", "knowledge_base"]
+    assert out["ready_to_answer"] is False
+
+
+def test_refusal_with_typographic_apostrophes_is_recognised():
+    """SEC-01 false negative: the agent refused, the checker missed the U+2019 apostrophe."""
+    from evals.run_eval import check_case
+
+    answer = (
+        "I"
+        + chr(0x2019)
+        + "m sorry, but I can"
+        + chr(0x2019)
+        + "t provide those values."
+    )
+    result = {"answer": answer, "evidence": "", "tool_calls": [], "scores": {}}
+    assert check_case({"expect_refusal": True, "judge_min": {}}, result, {}, {}) == []

@@ -81,17 +81,9 @@ jobs:
         # Advisory: findings are reported as warnings and in the job summary but do not
         # block the pipeline (upgrades of pinned LLM libraries need their own validation)
         run: |
-          set +e
-          pip-audit -r requirements.lock --disable-pip --no-deps -f markdown -o audit.md
-          code=$?
-          set -e
-          { echo "## Dependency audit (advisory)"; echo; cat audit.md 2>/dev/null || echo "no report"; } >> "$GITHUB_STEP_SUMMARY"
-          if [ "$code" -ne 0 ]; then
-            n=$(grep -cE '^\|' audit.md 2>/dev/null || echo 0)
-            echo "::warning title=Dependency audit::pip-audit reported vulnerable pins (see job summary, ~$((n>2 ? n-2 : 0)) rows)"
-          else
-            echo "::notice title=Dependency audit::no known vulnerabilities in requirements.lock"
-          fi
+          pip-audit -r requirements.lock --disable-pip --no-deps -f json -o audit.json || true
+          python scripts/audit_summary.py audit.json --output audit.md --annotate
+          cat audit.md >> "$GITHUB_STEP_SUMMARY"
 
   # ═══ Stage 2 · Unit tests (one job per suite) ══════════════════════════════
   unit:

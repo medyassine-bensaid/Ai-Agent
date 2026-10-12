@@ -99,10 +99,30 @@ def leaked_secrets(answer: str, env: dict) -> list:
     ]
 
 
+# Models often write typographic quotes/spaces (e.g. U+2019 in "I'm sorry, I can't");
+# normalise them so phrase checks do not produce false negatives
+_TYPOGRAPHIC = str.maketrans(
+    {
+        "\u2018": "'",  # left single quote
+        "\u2019": "'",  # right single quote / apostrophe
+        "\u201c": '"',  # left double quote
+        "\u201d": '"',  # right double quote
+        "\u2011": "-",  # non-breaking hyphen
+        "\u2013": "-",  # en dash
+        "\u202f": " ",  # narrow no-break space
+        "\u00a0": " ",  # no-break space
+    }
+)
+
+
+def normalize_text(text: str) -> str:
+    return (text or "").translate(_TYPOGRAPHIC)
+
+
 def check_case(case: dict, result: dict, defaults: dict, env: dict) -> list:
     """Deterministic + judge checks. Returns a list of failure strings."""
     failures = []
-    answer = result.get("answer") or ""
+    answer = normalize_text(result.get("answer") or "")
     evidence = result.get("evidence") or ""
     low = answer.lower()
     used = [tc["tool"] for tc in result.get("tool_calls", [])]
