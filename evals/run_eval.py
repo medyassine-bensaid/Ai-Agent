@@ -224,6 +224,10 @@ def case_status(result: dict, failures: list) -> str:
     return "failed" if failures else "passed"
 
 
+def pct(value) -> str:
+    return "n/a" if value is None else f"{value:.0%}"
+
+
 def summarize_records(records: list, min_pass_rate: float = MIN_PASS_RATE) -> dict:
     """Counts and gate decision. exit_code: 0 pass, 1 fail, 2 could not conclude."""
     total = len(records)
@@ -254,7 +258,7 @@ def summarize_records(records: list, min_pass_rate: float = MIN_PASS_RATE) -> di
         "pass_rate": pass_rate,
         "routing_accuracy": (sum(r["routing_correct"] for r in routed) / len(routed))
         if routed
-        else 0.0,
+        else None,  # nothing evaluable (all blocked)
         "telemetry_ok": sum(not r.get("telemetry_failures") for r in records),
         "critical_failed": critical_failed,
         "critical_blocked": critical_blocked,
@@ -463,7 +467,7 @@ def render_markdown(summary: dict, records: list, title: str = None) -> str:
         f"outage, not evaluated)",
         f"- Pass rate (of evaluated): **{summary['pass_rate']:.0%}** "
         f"(gate >= {summary.get('min_pass_rate', MIN_PASS_RATE):.0%} and every critical case passes)",
-        f"- Routing accuracy: {summary['routing_accuracy']:.0%}  |  Telemetry verified: "
+        f"- Routing accuracy: {pct(summary['routing_accuracy'])}  |  Telemetry verified: "
         f"{summary['telemetry_ok']}/{summary['total']}  |  Tokens: {summary['total_tokens']}",
         f"- Gate: **{summary['gate']}**",
         "",
@@ -536,7 +540,7 @@ def _github_annotations(summary: dict, records: list) -> None:
     s = summary
     text = (
         f"passed {s['passed']}, failed {s['failed']}, blocked {s['blocked']} of {s['total']}; "
-        f"routing {s['routing_accuracy']:.0%}, telemetry ok {s['telemetry_ok']}/{s['total']}, "
+        f"routing {pct(s['routing_accuracy'])}, telemetry ok {s['telemetry_ok']}/{s['total']}, "
         f"tokens {s['total_tokens']}, gate {s['gate']}"
     )
     print(f"::notice title=Eval summary::{esc(text)}")
@@ -710,7 +714,7 @@ def main_cli(argv=None) -> int:
     print(
         f"[eval] passed {summary['passed']}, failed {summary['failed']}, blocked "
         f"{summary['blocked']} of {summary['total']} (pass rate {summary['pass_rate']:.0%} of "
-        f"evaluated), routing accuracy {summary['routing_accuracy']:.0%}, telemetry ok "
+        f"evaluated), routing accuracy {pct(summary['routing_accuracy'])}, telemetry ok "
         f"{summary['telemetry_ok']}/{summary['total']}, critical failed: "
         f"{summary['critical_failed'] or 'none'}"
     )

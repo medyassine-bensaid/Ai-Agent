@@ -169,6 +169,7 @@ def test_gate_blocked_is_never_green():
 def test_gate_all_blocked_cannot_conclude():
     s = summarize_records([_rec("A", "blocked"), _rec("B", "blocked")])
     assert s["exit_code"] == 2 and s["evaluated"] == 0
+    assert s["routing_accuracy"] is None  # shown as n/a, not 0%
 
 
 def test_routing_accuracy_excludes_blocked_cases():
