@@ -26,7 +26,7 @@ def _get_judge_client() -> OpenAI:
         _groq_judge = OpenAI(
             api_key=os.environ["GROQ_API_KEY"],
             base_url="https://api.groq.com/openai/v1",
-            max_retries=5,   # SDK backs off on 429 (Groq tokens-per-minute limit)
+            max_retries=5,  # SDK backs off on 429 (Groq tokens-per-minute limit)
         )
     return _groq_judge
 
@@ -61,7 +61,11 @@ def _parse_judge(raw: str) -> dict:
     out = {}
     for metric in JUDGE_METRICS:
         v = data.get(metric)
-        if isinstance(v, bool) or not isinstance(v, (int, float)) or not 0.0 <= v <= 1.0:
+        if (
+            isinstance(v, bool)
+            or not isinstance(v, (int, float))
+            or not 0.0 <= v <= 1.0
+        ):
             raise ValueError(f"judge metric {metric!r} missing or out of range: {v!r}")
         out[metric] = float(v)
     out["reasoning"] = str(data.get("reasoning", ""))[:500]
@@ -69,7 +73,9 @@ def _parse_judge(raw: str) -> dict:
 
 
 @observe(name="llm-judge", as_type="evaluator")
-def _llm_judge(question: str, answer: str, evidence: str = "", retries: int = 1) -> dict:
+def _llm_judge(
+    question: str, answer: str, evidence: str = "", retries: int = 1
+) -> dict:
     """Return validated judge scores, or {"error": "..."} if the judge failed."""
     prompt = JUDGE_PROMPT.format(
         question=question[:1000],
@@ -79,7 +85,7 @@ def _llm_judge(question: str, answer: str, evidence: str = "", retries: int = 1)
     last_error = "unknown"
     for attempt in range(retries + 1):
         if attempt:
-            time.sleep(5 * attempt)   # back off before re-asking the judge
+            time.sleep(5 * attempt)  # back off before re-asking the judge
         try:
             r = _get_judge_client().chat.completions.create(
                 model=JUDGE_MODEL,
@@ -113,6 +119,7 @@ def _heuristic(answer: str) -> float:
         s += 0.2
     return max(0.0, min(1.0, s))
 
+
 # Public name used by tests / external callers
 score_answer_quality = _heuristic
 
@@ -121,9 +128,16 @@ def is_error_answer(answer: str) -> bool:
     return bool(re.search(r"i apologize|error generating", answer or "", re.I))
 
 
-def inline_score(trace_id: str, question: str, answer: str, evidence: str = "") -> dict:
+def inline_score(
+    trace_id: str,
+    question: str,
+    answer: str,
+    evidence: str = "",
+    details: dict | None = None,
+) -> dict:
     """Called from main.py with the current trace_id, query, answer and tool evidence.
-    Pushes evaluation scores to Langfuse and returns {score_name: value}."""
+    Pushes evaluation scores to Langfuse and returns {score_name: value}.
+    If `details` is given, a judge failure reason is stored in details["judge_error"]."""
     if not trace_id or not answer:
         print(f"  [scorer] SKIP - trace_id={trace_id!r} answer_len={len(answer or '')}")
         return {}
@@ -134,24 +148,39 @@ def inline_score(trace_id: str, question: str, answer: str, evidence: str = "") 
     submitted = {}
 
     def _score(name, value, data_type, comment=None):
-        lf_client.create_score(trace_id=trace_id, name=name, value=value,
-                               data_type=data_type, comment=comment)
+        lf_client.create_score(
+            trace_id=trace_id,
+            name=name,
+            value=value,
+            data_type=data_type,
+            comment=comment,
+        )
         submitted[name] = value
 
     if "error" in judge:
         # Make judge failures visible instead of silently producing no scores
         _score("llm-judge/error", 1, "BOOLEAN", comment=judge["error"][:500])
+        if details is not None:
+            details["judge_error"] = judge["error"]
     else:
         for metric in JUDGE_METRICS:
-            _score(f"llm-judge/{metric}", judge[metric], "NUMERIC", comment=judge["reasoning"])
+            _score(
+                f"llm-judge/{metric}",
+                judge[metric],
+                "NUMERIC",
+                comment=judge["reasoning"],
+            )
 
     _score("heuristic/quality", _heuristic(answer), "NUMERIC")
     # 1 = the answer is an error message, 0 = normal answer
     _score("has-error", 1 if is_error_answer(answer) else 0, "BOOLEAN")
 
     lf_client.flush()
-    print(f"  [scorer] OK relevance={judge.get('relevance','n/a')} heuristic={_heuristic(answer):.2f}")
+    print(
+        f"  [scorer] OK relevance={judge.get('relevance','n/a')} heuristic={_heuristic(answer):.2f}"
+    )
     return submitted
+
 
 if __name__ == "__main__":
     print("[scorer] This module provides inline scoring for the agent.")

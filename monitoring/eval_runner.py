@@ -9,18 +9,26 @@ applies a quality gate. Exit codes:
   1 = gate failed (scores below threshold)
   2 = could not evaluate (Langfuse unreachable, or no scored traces) - never a pass
 """
+
 import os
 import sys
 from datetime import datetime, timedelta, timezone
 
 from monitoring import langfuse_api
 
-QUALITY_THRESHOLD = float(os.environ.get("QUALITY_THRESHOLD", "0.5"))     # heuristic/quality mean
-JUDGE_THRESHOLD   = float(os.environ.get("JUDGE_THRESHOLD", "0.7"))       # each llm-judge/* mean
-MAX_ERROR_RATE    = float(os.environ.get("MAX_ERROR_RATE", "0.2"))        # has-error mean
-WINDOW_HOURS      = float(os.environ.get("EVAL_WINDOW_HOURS", "1"))
-GATED_JUDGE_METRICS = ("llm-judge/relevance", "llm-judge/faithfulness",
-                       "llm-judge/hallucination_risk")
+QUALITY_THRESHOLD = float(
+    os.environ.get("QUALITY_THRESHOLD", "0.5")
+)  # heuristic/quality mean
+JUDGE_THRESHOLD = float(
+    os.environ.get("JUDGE_THRESHOLD", "0.7")
+)  # each llm-judge/* mean
+MAX_ERROR_RATE = float(os.environ.get("MAX_ERROR_RATE", "0.2"))  # has-error mean
+WINDOW_HOURS = float(os.environ.get("EVAL_WINDOW_HOURS", "1"))
+GATED_JUDGE_METRICS = (
+    "llm-judge/relevance",
+    "llm-judge/faithfulness",
+    "llm-judge/hallucination_risk",
+)
 
 
 def summarize(scores: list) -> dict:
@@ -70,7 +78,9 @@ def main() -> int:
         trace_ids = [r["traceId"] for r in runs]
         scores = langfuse_api.list_scores(trace_ids=trace_ids) if trace_ids else []
     except Exception as e:
-        print(f"[eval] ERROR: could not read Langfuse at {langfuse_api.base_url()}: {e}")
+        print(
+            f"[eval] ERROR: could not read Langfuse at {langfuse_api.base_url()}: {e}"
+        )
         return 2
 
     buckets = summarize(scores)

@@ -1,0 +1,48 @@
+name: Start ephemeral Langfuse v4
+description: >
+  Starts Langfuse v4 from the upstream docker-compose.yml (pinned commit) with headless
+  initialisation and random throwaway project keys, waits until it is healthy, and exports
+  LANGFUSE_BASE_URL / LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY to later steps.
+inputs:
+  compose-ref:
+    description: langfuse/langfuse commit whose docker-compose.yml is used
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Start Langfuse and wait for health
+      shell: bash
+      env:
+        COMPOSE_REF: ${{ inputs.compose-ref }}
+      run: |
+        mkdir -p /tmp/langfuse && cd /tmp/langfuse
+        curl -fsSL "https://raw.githubusercontent.com/langfuse/langfuse/${COMPOSE_REF}/docker-compose.yml" -o docker-compose.yml
+        PK="pk-lf-ci-$(openssl rand -hex 12)"; SK="sk-lf-ci-$(openssl rand -hex 16)"
+        echo "::add-mask::$SK"
+        {
+          echo "LANGFUSE_BASE_URL=http://localhost:3000"
+          echo "LANGFUSE_PUBLIC_KEY=$PK"
+          echo "LANGFUSE_SECRET_KEY=$SK"
+        } >> "$GITHUB_ENV"
+        {
+          echo "NEXTAUTH_SECRET=$(openssl rand -hex 32)"
+          echo "SALT=$(openssl rand -hex 16)"
+          echo "ENCRYPTION_KEY=$(openssl rand -hex 32)"
+          echo "LANGFUSE_INIT_ORG_ID=ci-org"
+          echo "LANGFUSE_INIT_ORG_NAME=CI"
+          echo "LANGFUSE_INIT_PROJECT_ID=ci-project"
+          echo "LANGFUSE_INIT_PROJECT_NAME=devops-agent-ci"
+          echo "LANGFUSE_INIT_PROJECT_PUBLIC_KEY=$PK"
+          echo "LANGFUSE_INIT_PROJECT_SECRET_KEY=$SK"
+        } > .env
+        docker compose up -d --quiet-pull
+        for i in $(seq 1 90); do
+          if curl -fs http://localhost:3000/api/public/health | grep -q '"OK"'; then
+            echo "Langfuse healthy: $(curl -s http://localhost:3000/api/public/health)"
+            exit 0
+          fi
+          sleep 5
+        done
+        echo "::error::Langfuse did not become healthy"
+        docker compose ps; docker compose logs --tail 100
+        exit 1

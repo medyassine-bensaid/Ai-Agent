@@ -58,7 +58,7 @@ tools/        rag_tool.py (Chroma RAG) · web_search.py (Tavily) · knowledge_ba
               rag_evaluator.py (RAG-specific judge metrics)
 monitoring/   langfuse_scorer.py (inline judge) · langfuse_api.py (v4 read API helpers)
               eval_runner.py (score quality gate) · langfuse_exporter.py (Prometheus) · pr_comment.py
-evals/        dataset.json (18 end-to-end cases) · run_eval.py (runner + telemetry verification)
+evals/        dataset.json (34 end-to-end cases) · merge_reports.py · run_eval.py (runner + telemetry verification)
 tests/        unit + regression tests (no network)
 config/       settings.py
 main.py       CLI entry point (run_agent / run_agent_detailed)
@@ -135,7 +135,8 @@ ingest_file("docs/runbook.md")   # chunks, embeds and upserts; changed chunks ar
 | Unit + regression tests (Groq/Tavily/Langfuse mocked) | `pytest` | no |
 | End-to-end evaluation (real Groq, Tavily, RAG, judge, Langfuse) | `python -m evals.run_eval` | yes |
 | Single eval case | `python -m evals.run_eval --case RAG-01` | yes |
-| Must-pass cases only (6, ~1/3 of the tokens) | `python -m evals.run_eval --critical-only` | yes |
+| One case group | `python -m evals.run_eval --prefix RAG,WEB` | yes |
+| Must-pass cases only (6 of 34) | `python -m evals.run_eval --critical-only` | yes |
 | Quality gate over recent Langfuse scores | `python -m monitoring.eval_runner` | Langfuse |
 | RAG judge metrics on recent RAG traces | `python -m tools.rag_evaluator` | yes |
 
@@ -182,19 +183,27 @@ the Langfuse v4 read APIs, the Prometheus exporter and Grafana.
 
 ## CI/CD
 
-`.github/workflows/cicd.yml` (GitHub-hosted runners, on push / PR / manual):
+`.github/workflows/cicd.yml` (GitHub-hosted runners, on push / PR / manual) runs 21 jobs in 5 stages:
 
-1. **Lint**: `ruff check` (no auto-fix in CI)
-2. **Unit tests**: `pytest` with JUnit + coverage reports uploaded as artifacts
-3. **Docker build**: builds the image and runs the healthcheck and import smoke test inside it
-4. **Live evaluation**: starts an ephemeral Langfuse v4 (upstream compose, headless init with
-   throwaway keys), runs the evaluation suite (the 6 critical cases on push/PR; all 18 cases
-   when dispatched manually with `full_eval`), then the score quality gate
-   `python -m monitoring.eval_runner`; uploads `reports/` and writes the report to the job summary
+| Stage | Jobs |
+|---|---|
+| 1 · Quality & security | Lint (`ruff check`) · Format (`ruff format --check`) · Secret scan (gitleaks, full history) · Dependency audit (pip-audit, advisory) |
+| 2 · Unit tests | One job per suite: Agent core · Regression fixes · Monitoring & quality gate · Evaluation suite logic · CI scripts; then **Report & coverage** (per-suite table, combined coverage, fails if any test failed) |
+| 3 · Container | Build image (layer cache) → Healthcheck & import smoke test (non-root check) · Image scan (Trivy, advisory) |
+| 4 · Live evaluation | Preflight (secrets, mode) → one job per case group, each with its own ephemeral Langfuse v4: RAG · Web search · Routing KB+web & unknowns · Safety & off-domain · Robustness, memory & general; then **Combined report & gate** |
+| 5 · Summary | Pipeline summary table of every job result |
 
-Repository secrets required for step 4: `GROQ_API_KEY`, `TAVILY_API_KEY`. On pushes the job
-fails if they are missing; on pull requests from forks (which never receive secrets) it is
-skipped with a warning.
+Live evaluation runs the 6 critical cases on push/PR and all 34 cases when dispatched manually
+with `full_eval`. Each group runs `evals.run_eval` and then the Langfuse score gate
+(`monitoring.eval_runner`). Results are classified as **passed / failed / blocked**: blocked
+means the LLM provider refused or was unavailable (e.g. Groq rate limit), so the case was not
+evaluated. Exit codes: 0 passed, 1 failed, 2 blocked; a blocked run is never green. Failing and
+blocked cases also appear as annotations on the run page, and the full reports are uploaded as
+artifacts (`eval-<group>`, `eval-report-combined`).
+
+Repository secrets required for stage 4: `GROQ_API_KEY`, `TAVILY_API_KEY`. On pushes the
+preflight fails if they are missing; on pull requests from forks (which never receive secrets)
+the live evaluation is skipped with a warning.
 
 `.github/workflows/deploy.yml` (manual `workflow_dispatch`, self-hosted runner) builds and pushes
 the image to Docker Hub, deploys with Docker Compose and/or Minikube, and runs the post-deploy

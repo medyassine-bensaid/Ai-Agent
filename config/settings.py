@@ -9,6 +9,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+
 class Settings:
     """Configuration settings for the agent"""
 
@@ -31,11 +32,11 @@ class Settings:
     WEB_SEARCH_MAX_RESULTS = 5
     WEB_SEARCH_TIMEOUT = 30  # seconds; a stalled Tavily call must not hang the agent
 
-    LANGFUSE_SECRET_KEY = os.getenv("LANGFUSE_SECRET_KEY")         # sk-lf-...
-    LANGFUSE_PUBLIC_KEY = os.getenv("LANGFUSE_PUBLIC_KEY")         # pk-lf-...
-    LANGFUSE_BASE_URL   = os.getenv("LANGFUSE_BASE_URL")
+    LANGFUSE_SECRET_KEY = os.getenv("LANGFUSE_SECRET_KEY")  # sk-lf-...
+    LANGFUSE_PUBLIC_KEY = os.getenv("LANGFUSE_PUBLIC_KEY")  # pk-lf-...
+    LANGFUSE_BASE_URL = os.getenv("LANGFUSE_BASE_URL")
 
-    APP_ENV     = os.getenv("APP_ENV", "development")              # development | staging | production
+    APP_ENV = os.getenv("APP_ENV", "development")  # development | staging | production
     APP_VERSION = os.getenv("APP_VERSION", "0.1.0")
 
     @classmethod
@@ -43,6 +44,9 @@ class Settings:
         """Validate required settings"""
         missing = [k for k in ("GROQ_API_KEY", "TAVILY_API_KEY") if not getattr(cls, k)]
         if missing:
-            raise ValueError(f"Missing required environment variables: {', '.join(missing)}")
+            raise ValueError(
+                f"Missing required environment variables: {', '.join(missing)}"
+            )
+
 
 settings = Settings()

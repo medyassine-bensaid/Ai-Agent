@@ -5,9 +5,11 @@ from langgraph.graph import add_messages
 
 class ToolCall(TypedDict):
     """Structured tool call with query"""
+
     tool: str
     query: str
     reasoning: str
+
 
 class AgentState(TypedDict):
     """State schema for the ReAct agent"""

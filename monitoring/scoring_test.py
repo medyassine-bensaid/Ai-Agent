@@ -7,6 +7,7 @@ Usage:
 If a score appears in Langfuse → SDK connectivity is fine.
 If scores tab stays empty → check your env vars / network.
 """
+
 import os
 from pathlib import Path
 
@@ -43,4 +44,6 @@ with lf.start_as_current_observation(
 
 lf.flush()
 print("[+] Score pushed. Check Langfuse -> Scores tab for 'test/manual-score'.")
-print(f"[+] Direct trace URL: {os.environ.get('LANGFUSE_BASE_URL','http://localhost:3000')}/traces/{trace_id}")
+print(
+    f"[+] Direct trace URL: {os.environ.get('LANGFUSE_BASE_URL','http://localhost:3000')}/traces/{trace_id}"
+)

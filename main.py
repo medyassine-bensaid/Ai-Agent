@@ -15,7 +15,8 @@ from utils.memory_store import conversation_memory
 
 # ── Langfuse setup ───────────────────────────────────────────────────────────
 langfuse_client = get_client()
-langfuse_handler = CallbackHandler()   # one instance, reused across all runs
+langfuse_handler = CallbackHandler()  # one instance, reused across all runs
+
 
 def _flush_langfuse():
     """Ensure all buffered traces are sent before process dies."""
@@ -24,23 +25,29 @@ def _flush_langfuse():
     except Exception:
         pass
 
+
 atexit.register(_flush_langfuse)
+
 
 # Handle SIGTERM (docker stop) gracefully
 def _sigterm_handler(signum, frame):
     _flush_langfuse()
     sys.exit(0)
 
+
 signal.signal(signal.SIGTERM, _sigterm_handler)
+
 
 # Lazy import of scorer (avoids crash if the module is missing or GROQ_API_KEY not set)
 def _get_scorer():
     try:
         from monitoring.langfuse_scorer import inline_score
+
         return inline_score
     except Exception as e:
         logger.log_error(f"Scorer import failed: {e}")
         return None
+
 
 def print_banner():
     """Print welcome banner"""
@@ -57,11 +64,13 @@ Type 'clear' to clear conversation history.
 """
     safe_print(banner)
 
+
 def _evidence_from_state(state: dict) -> str:
     """Tool observations the answer was generated from (judge / eval input)."""
     return "\n\n".join(
         m.content for m in state.get("messages", []) if isinstance(m, AIMessage)
     )
+
 
 @observe(name="agent-run", capture_output=False)
 def run_agent_detailed(query: str, session_id: str | None = None) -> dict:
@@ -79,16 +88,22 @@ def run_agent_detailed(query: str, session_id: str | None = None) -> dict:
         "search_query": None,
         "iteration": 0,
         "ready_to_answer": False,
-        "final_answer": ""
+        "final_answer": "",
     }
 
-    result = {"answer": "", "tool_calls": [], "evidence": "", "error": None,
-              "trace_id": None, "scores": {}}
+    result = {
+        "answer": "",
+        "tool_calls": [],
+        "evidence": "",
+        "error": None,
+        "trace_id": None,
+        "scores": {},
+        "judge_error": None,
+    }
     try:
         with propagate_attributes(session_id=session_id):
             final_state = agent_graph.invoke(
-                initial_state,
-                config={"callbacks": [langfuse_handler]}
+                initial_state, config={"callbacks": [langfuse_handler]}
             )
         result["answer"] = final_state["final_answer"]
         result["tool_calls"] = list(final_state.get("tool_calls") or [])
@@ -99,10 +114,14 @@ def run_agent_detailed(query: str, session_id: str | None = None) -> dict:
         logger.log_error(error_msg)
         result["error"] = str(e)
         # Details go to logs/trace only; provider errors can contain account ids and URLs
-        result["answer"] = (f"I apologize, but I encountered an error ({type(e).__name__}).\n"
-                            "Please try rephrasing your question.")
+        result["answer"] = (
+            f"I apologize, but I encountered an error ({type(e).__name__}).\n"
+            "Please try rephrasing your question."
+        )
         try:
-            langfuse_client.update_current_span(level="ERROR", status_message=error_msg[:500])
+            langfuse_client.update_current_span(
+                level="ERROR", status_message=error_msg[:500]
+            )
         except Exception:
             pass
 
@@ -118,9 +137,18 @@ def run_agent_detailed(query: str, session_id: str | None = None) -> dict:
             if trace_id and result["answer"]:
                 inline_score = _get_scorer()
                 if inline_score:
-                    result["scores"] = inline_score(
-                        trace_id, query, result["answer"], evidence=result["evidence"]
-                    ) or {}
+                    details = {}
+                    result["scores"] = (
+                        inline_score(
+                            trace_id,
+                            query,
+                            result["answer"],
+                            evidence=result["evidence"],
+                            details=details,
+                        )
+                        or {}
+                    )
+                    result["judge_error"] = details.get("judge_error")
         except Exception as e:
             logger.log_error(f"Inline scoring failed: {e}")
 
@@ -128,9 +156,11 @@ def run_agent_detailed(query: str, session_id: str | None = None) -> dict:
 
     return result
 
+
 def run_agent(query: str, session_id: str | None = None) -> str:
     """Run the agent with a query and score the output inline."""
     return run_agent_detailed(query, session_id=session_id)["answer"]
+
 
 def main():
     """Main CLI loop"""
@@ -158,12 +188,14 @@ def main():
                 continue
 
             # Check for exit commands
-            if user_input.lower() in ['exit', 'quit', 'q']:
-                safe_print(f"\n{Fore.CYAN}Goodbye! Happy DevOps-ing! 🚀{Style.RESET_ALL}\n")
+            if user_input.lower() in ["exit", "quit", "q"]:
+                safe_print(
+                    f"\n{Fore.CYAN}Goodbye! Happy DevOps-ing! 🚀{Style.RESET_ALL}\n"
+                )
                 break
 
             # Check for clear command
-            if user_input.lower() == 'clear':
+            if user_input.lower() == "clear":
                 conversation_memory.clear()
                 print(f"{Fore.YELLOW}Conversation history cleared.{Style.RESET_ALL}")
                 continue
@@ -178,10 +210,13 @@ def main():
             # Response is already logged by the agent
 
         except KeyboardInterrupt:
-            safe_print(f"\n\n{Fore.CYAN}Goodbye! Happy DevOps-ing! 🚀{Style.RESET_ALL}\n")
+            safe_print(
+                f"\n\n{Fore.CYAN}Goodbye! Happy DevOps-ing! 🚀{Style.RESET_ALL}\n"
+            )
             break
         except Exception as e:
             logger.log_error(f"Unexpected error: {str(e)}")
+
 
 if __name__ == "__main__":
     main()

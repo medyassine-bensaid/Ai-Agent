@@ -71,6 +71,7 @@ Information gathered:
 
 Now provide your final answer. Make it:
 - Direct: answer the question first, then add supporting detail
+- Concise: usually under 300 words; go longer only when the question needs it
 - Clear and well-structured
 - Adapted to the user's expertise level
 - Practical and actionable

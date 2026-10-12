@@ -5,6 +5,7 @@ from colorama import Fore, Style, init
 
 init(autoreset=True)
 
+
 def safe_print(text: str):
     """print() that never raises: consoles/pipes that cannot encode emoji
     (e.g. cp1252 on Windows) get replacement characters instead of crashing
@@ -14,6 +15,7 @@ def safe_print(text: str):
     except UnicodeEncodeError:
         enc = getattr(sys.stdout, "encoding", None) or "ascii"
         print(text.encode(enc, errors="replace").decode(enc, errors="replace"))
+
 
 class AgentLogger:
     """Structured logger for agent operations"""
@@ -33,7 +35,9 @@ class AgentLogger:
 
     def log_action(self, action: str, tool: str):
         """Log agent's action"""
-        safe_print(f"{Fore.YELLOW}🔧 ACTION: {Style.RESET_ALL}Using tool '{tool}' - {action}")
+        safe_print(
+            f"{Fore.YELLOW}🔧 ACTION: {Style.RESET_ALL}Using tool '{tool}' - {action}"
+        )
 
     def log_observation(self, observation: str):
         """Log tool results"""
@@ -53,5 +57,6 @@ class AgentLogger:
         safe_print(f"\n{Fore.BLUE}{'='*60}")
         safe_print(f"🔄 ITERATION {iteration}/{max_iterations}")
         safe_print(f"{'='*60}{Style.RESET_ALL}")
+
 
 logger = AgentLogger()

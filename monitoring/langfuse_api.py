@@ -11,6 +11,7 @@ return 404. These helpers use their replacements:
 A "trace" in v4 is the set of observations sharing a traceId; the root
 observation of an agent run is the "agent-run" span created in main.py.
 """
+
 import base64
 import json
 import os
@@ -28,7 +29,9 @@ def base_url() -> str:
 
 def auth_headers() -> dict:
     """Basic Auth headers for the Langfuse REST API."""
-    credentials = f"{os.environ['LANGFUSE_PUBLIC_KEY']}:{os.environ['LANGFUSE_SECRET_KEY']}"
+    credentials = (
+        f"{os.environ['LANGFUSE_PUBLIC_KEY']}:{os.environ['LANGFUSE_SECRET_KEY']}"
+    )
     encoded = base64.b64encode(credentials.encode()).decode()
     return {"Authorization": f"Basic {encoded}", "Content-Type": "application/json"}
 
@@ -42,8 +45,12 @@ def _paginate(path: str, params: dict, max_items: int) -> Iterator[dict]:
     params = dict(params)
     fetched = 0
     while True:
-        resp = requests.get(f"{base_url()}{path}", params=params,
-                            headers=auth_headers(), timeout=TIMEOUT)
+        resp = requests.get(
+            f"{base_url()}{path}",
+            params=params,
+            headers=auth_headers(),
+            timeout=TIMEOUT,
+        )
         resp.raise_for_status()
         body = resp.json()
         for item in body.get("data", []):
@@ -57,29 +64,46 @@ def _paginate(path: str, params: dict, max_items: int) -> Iterator[dict]:
         params["cursor"] = cursor
 
 
-def list_observations(since: datetime, until: Optional[datetime] = None, *,
-                      trace_id: Optional[str] = None, name: Optional[str] = None,
-                      fields: str = "core,basic", max_items: int = 1000) -> list:
+def list_observations(
+    since: datetime,
+    until: Optional[datetime] = None,
+    *,
+    trace_id: Optional[str] = None,
+    name: Optional[str] = None,
+    fields: str = "core,basic",
+    max_items: int = 1000,
+) -> list:
     until = until or datetime.now(timezone.utc) + timedelta(minutes=5)
-    params = {"fromStartTime": iso(since), "toStartTime": iso(until),
-              "fields": fields, "limit": 200}
+    params = {
+        "fromStartTime": iso(since),
+        "toStartTime": iso(until),
+        "fields": fields,
+        "limit": 200,
+    }
     if trace_id:
         params["traceId"] = trace_id
     if name:
         params["filter"] = json.dumps(
-            [{"type": "string", "column": "name", "operator": "=", "value": name}])
+            [{"type": "string", "column": "name", "operator": "=", "value": name}]
+        )
     return list(_paginate("/api/public/v2/observations", params, max_items))
 
 
 def list_agent_runs(since: datetime, max_items: int = 100) -> list:
     """Root 'agent-run' observations (one per agent trace), newest first."""
-    runs = list_observations(since, name="agent-run", fields="core,basic,io",
-                             max_items=max_items)
+    runs = list_observations(
+        since, name="agent-run", fields="core,basic,io", max_items=max_items
+    )
     return sorted(runs, key=lambda o: o.get("startTime", ""), reverse=True)
 
 
-def list_scores(*, trace_ids: Optional[list] = None, since: Optional[datetime] = None,
-                name: Optional[str] = None, max_items: int = 5000) -> list:
+def list_scores(
+    *,
+    trace_ids: Optional[list] = None,
+    since: Optional[datetime] = None,
+    name: Optional[str] = None,
+    max_items: int = 5000,
+) -> list:
     """Scores with their subject (trace/observation) attached."""
     params = {"fields": "details,subject", "limit": 100}
     if trace_ids:

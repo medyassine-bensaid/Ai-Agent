@@ -26,8 +26,10 @@ _groq = None
 def _get_groq() -> OpenAI:
     global _groq
     if _groq is None:
-        _groq = OpenAI(api_key=os.environ["GROQ_API_KEY"],
-                       base_url="https://api.groq.com/openai/v1")
+        _groq = OpenAI(
+            api_key=os.environ["GROQ_API_KEY"],
+            base_url="https://api.groq.com/openai/v1",
+        )
     return _groq
 
 
@@ -38,11 +40,18 @@ def _judge(prompt: str, metric: str) -> float | None:
             model=MODEL,
             messages=[{"role": "user", "content": prompt}],
             # reasoning model: leave room for hidden reasoning tokens
-            max_tokens=2048, temperature=0.0, reasoning_effort="low",
-            response_format={"type": "json_object"})
+            max_tokens=2048,
+            temperature=0.0,
+            reasoning_effort="low",
+            response_format={"type": "json_object"},
+        )
         raw = re.sub(r"```json|```", "", r.choices[0].message.content or "").strip()
         v = json.loads(raw).get(metric)
-        if isinstance(v, bool) or not isinstance(v, (int, float)) or not 0.0 <= v <= 1.0:
+        if (
+            isinstance(v, bool)
+            or not isinstance(v, (int, float))
+            or not 0.0 <= v <= 1.0
+        ):
             raise ValueError(f"{metric} missing or out of range: {v!r}")
         return float(v)
     except Exception as e:
@@ -79,11 +88,14 @@ def score_rag(question: str, context: str, answer: str) -> dict:
     """Judge one RAG interaction. Failed metrics are omitted (never defaulted to 0/1)."""
     prompts = {
         "context_relevance": CONTEXT_RELEVANCE_PROMPT.format(
-            question=question[:1000], context=context[:4000]),
+            question=question[:1000], context=context[:4000]
+        ),
         "faithfulness": FAITHFULNESS_PROMPT.format(
-            context=context[:4000], answer=answer[:6000]),
+            context=context[:4000], answer=answer[:6000]
+        ),
         "answer_relevance": ANSWER_RELEVANCE_PROMPT.format(
-            question=question[:1000], answer=answer[:6000]),
+            question=question[:1000], answer=answer[:6000]
+        ),
     }
     scores = {}
     for metric, prompt in prompts.items():
@@ -96,6 +108,7 @@ def score_rag(question: str, context: str, answer: str) -> dict:
 def evaluate_rag_trace(trace_id: str, question: str, context: str, answer: str) -> dict:
     """Score a single RAG trace and push all scores to Langfuse."""
     from langfuse import get_client
+
     langfuse = get_client()
     scores = score_rag(question, context, answer)
     for name, value in scores.items():
@@ -107,9 +120,13 @@ def evaluate_rag_trace(trace_id: str, question: str, context: str, answer: str) 
         )
         print(f"  [rag_eval] {name}={value:.2f} -> trace {trace_id[:12]}...")
     if len(scores) < len(RAG_METRICS):
-        langfuse.create_score(trace_id=trace_id, name="rag/judge-error", value=1,
-                              data_type="BOOLEAN",
-                              comment=f"missing: {set(RAG_METRICS) - set(scores)}")
+        langfuse.create_score(
+            trace_id=trace_id,
+            name="rag/judge-error",
+            value=1,
+            data_type="BOOLEAN",
+            comment=f"missing: {set(RAG_METRICS) - set(scores)}",
+        )
     langfuse.flush()
     return scores
 
@@ -121,15 +138,19 @@ def evaluate_recent_rag_traces(hours: float = 1) -> int:
     question/answer, the 'rag_tool' tool observation holds the retrieved context.
     """
     from monitoring import langfuse_api
+
     since = datetime.now(timezone.utc) - timedelta(hours=hours)
-    rag_calls = langfuse_api.list_observations(since, name="rag_tool",
-                                               fields="core,basic,io", max_items=200)
+    rag_calls = langfuse_api.list_observations(
+        since, name="rag_tool", fields="core,basic,io", max_items=200
+    )
     if not rag_calls:
         print("[rag_eval] No RAG tool calls found.")
         return 0
 
-    already = {langfuse_api.score_trace_id(s) for s in
-               langfuse_api.list_scores(since=since, name="rag/faithfulness")}
+    already = {
+        langfuse_api.score_trace_id(s)
+        for s in langfuse_api.list_scores(since=since, name="rag/faithfulness")
+    }
     runs = {r["traceId"]: r for r in langfuse_api.list_agent_runs(since, max_items=200)}
 
     evaluated = 0
@@ -146,7 +167,9 @@ def evaluate_recent_rag_traces(hours: float = 1) -> int:
                 inp = json.loads(inp)
             except ValueError:
                 pass
-        question = (inp.get("args") or [""])[0] if isinstance(inp, dict) else str(inp or "")
+        question = (
+            (inp.get("args") or [""])[0] if isinstance(inp, dict) else str(inp or "")
+        )
         answer = str(run.get("output") or "")
         if question and answer:
             evaluate_rag_trace(trace_id, question, "\n\n".join(ctx), answer)
@@ -158,5 +181,6 @@ def evaluate_recent_rag_traces(hours: float = 1) -> int:
 
 if __name__ == "__main__":
     from dotenv import load_dotenv
+
     load_dotenv()
     evaluate_recent_rag_traces(hours=1)

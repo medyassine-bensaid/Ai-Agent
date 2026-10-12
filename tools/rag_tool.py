@@ -23,21 +23,23 @@ from sentence_transformers import SentenceTransformer
 from utils.logger import logger
 
 # ── Config ──────────────────────────────────────────────────────────────────
-CHROMA_PATH = os.getenv("CHROMA_PATH", str(Path(__file__).resolve().parent.parent / "data" / "chroma"))
+CHROMA_PATH = os.getenv(
+    "CHROMA_PATH", str(Path(__file__).resolve().parent.parent / "data" / "chroma")
+)
 Path(CHROMA_PATH).mkdir(parents=True, exist_ok=True)
-COLLECTION    = "devops_docs"
-EMBED_MODEL   = "all-MiniLM-L6-v2"
-CHUNK_SIZE    = 400   # chars
+COLLECTION = "devops_docs"
+EMBED_MODEL = "all-MiniLM-L6-v2"
+CHUNK_SIZE = 400  # chars
 CHUNK_OVERLAP = 80
-TOP_K         = 4
+TOP_K = 4
 # Chunks below this cosine similarity are dropped so off-topic questions do not
 # get unrelated context injected into the answer prompt
-MIN_SCORE     = float(os.getenv("RAG_MIN_SCORE", "0.3"))
+MIN_SCORE = float(os.getenv("RAG_MIN_SCORE", "0.3"))
 
 langfuse = get_client()
 
 # ── Lazy singletons ─────────────────────────────────────────────────────────
-_embedder   = None
+_embedder = None
 _collection = None
 
 
@@ -66,12 +68,17 @@ def _get_collection():
 def _chunk_text(text: str, source: str) -> List[Dict]:
     chunks, start = [], 0
     while start < len(text):
-        end  = min(start + CHUNK_SIZE, len(text))
+        end = min(start + CHUNK_SIZE, len(text))
         chunk_text = text[start:end].strip()
         if chunk_text:
             uid = hashlib.md5(f"{source}:{start}".encode()).hexdigest()
-            chunks.append({"id": uid, "text": chunk_text,
-                           "metadata": {"source": source, "start": start}})
+            chunks.append(
+                {
+                    "id": uid,
+                    "text": chunk_text,
+                    "metadata": {"source": source, "start": start},
+                }
+            )
         start += CHUNK_SIZE - CHUNK_OVERLAP
     return chunks
 
@@ -79,9 +86,9 @@ def _chunk_text(text: str, source: str) -> List[Dict]:
 # ── Ingestion ────────────────────────────────────────────────────────────────
 def ingest_text(text: str, source: str = "manual") -> int:
     """Ingest raw text into ChromaDB. Returns number of chunks added."""
-    col      = _get_collection()
+    col = _get_collection()
     embedder = _get_embedder()
-    chunks   = _chunk_text(text, source)
+    chunks = _chunk_text(text, source)
     if not chunks:
         return 0
 
@@ -93,10 +100,10 @@ def ingest_text(text: str, source: str = "manual") -> int:
         return 0
 
     col.upsert(
-        ids        = [c["id"]      for c in new],
-        documents  = [c["text"]    for c in new],
-        embeddings = embedder.encode([c["text"] for c in new]).tolist(),
-        metadatas  = [c["metadata"] for c in new],
+        ids=[c["id"] for c in new],
+        documents=[c["text"] for c in new],
+        embeddings=embedder.encode([c["text"] for c in new]).tolist(),
+        metadatas=[c["metadata"] for c in new],
     )
     logger.log_action(f"Ingested {len(new)} chunks from '{source}'", "rag_ingest")
     return len(new)
@@ -111,22 +118,28 @@ def ingest_file(path: str) -> int:
 def ingest_builtin_kb():
     """Seed ChromaDB from the existing DEVOPS_KNOWLEDGE dict (one-time)."""
     from tools.knowledge_base import DEVOPS_KNOWLEDGE
+
     total = 0
     for topic, content in DEVOPS_KNOWLEDGE.items():
         total += ingest_text(content, source=f"kb:{topic}")
     if total:
-        logger.log_action(f"Seeded RAG with {total} chunks from built-in KB", "rag_seed")
+        logger.log_action(
+            f"Seeded RAG with {total} chunks from built-in KB", "rag_seed"
+        )
 
 
 # ── Retrieval ────────────────────────────────────────────────────────────────
 @observe(name="rag-retrieval", as_type="retriever")
 def _retrieve(query: str) -> List[Dict]:
-    col      = _get_collection()
+    col = _get_collection()
     embedder = _get_embedder()
 
     q_emb = embedder.encode([query]).tolist()
-    results = col.query(query_embeddings=q_emb, n_results=TOP_K,
-                        include=["documents", "metadatas", "distances"])
+    results = col.query(
+        query_embeddings=q_emb,
+        n_results=TOP_K,
+        include=["documents", "metadatas", "distances"],
+    )
 
     docs = []
     for doc, meta, dist in zip(
@@ -137,14 +150,24 @@ def _retrieve(query: str) -> List[Dict]:
         score = round(1 - dist, 3)  # cosine distance -> similarity
         if score < MIN_SCORE:
             continue
-        docs.append({"text": doc, "source": meta.get("source","?"),
-                     "chunk_id": meta.get("start"), "score": score})
+        docs.append(
+            {
+                "text": doc,
+                "source": meta.get("source", "?"),
+                "chunk_id": meta.get("start"),
+                "score": score,
+            }
+        )
 
     # Attach retrieval metadata to the current @observe span (SDK v4 has no .trace())
     try:
         langfuse.update_current_span(
-            metadata={"query": query, "num_docs": len(docs), "min_score": MIN_SCORE,
-                      "top_score": docs[0]["score"] if docs else 0},
+            metadata={
+                "query": query,
+                "num_docs": len(docs),
+                "min_score": MIN_SCORE,
+                "top_score": docs[0]["score"] if docs else 0,
+            },
         )
     except Exception as e:
         logger.log_error(f"Langfuse span update failed: {e}")
@@ -172,8 +195,10 @@ def rag_tool(query: str) -> str:
 
     docs = _retrieve(query)
     if not docs:
-        return (f"No relevant documentation found in the knowledge base for '{query}' "
-                f"(no chunk scored >= {MIN_SCORE}).")
+        return (
+            f"No relevant documentation found in the knowledge base for '{query}' "
+            f"(no chunk scored >= {MIN_SCORE})."
+        )
 
     output = f"Retrieved {len(docs)} relevant chunks:\n\n"
     for i, d in enumerate(docs, 1):

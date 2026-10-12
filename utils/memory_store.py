@@ -11,20 +11,18 @@ class ConversationMemory:
         self.metadata = {
             "user_expertise": "unknown",
             "topics_discussed": set(),
-            "user_stack": set()
+            "user_stack": set(),
         }
 
     def add_message(self, role: str, content: str):
         """Add a message to memory"""
-        self.messages.append({
-            "role": role,
-            "content": content,
-            "timestamp": datetime.now().isoformat()
-        })
+        self.messages.append(
+            {"role": role, "content": content, "timestamp": datetime.now().isoformat()}
+        )
 
         # Keep only last N messages
         if len(self.messages) > self.max_messages * 2:  # *2 for user+assistant pairs
-            self.messages = self.messages[-self.max_messages * 2:]
+            self.messages = self.messages[-self.max_messages * 2 :]
 
     def get_context(self) -> str:
         """Get conversation context as string"""
@@ -65,8 +63,9 @@ class ConversationMemory:
         self.metadata = {
             "user_expertise": "unknown",
             "topics_discussed": set(),
-            "user_stack": set()
+            "user_stack": set(),
         }
+
 
 # Global memory instance
 conversation_memory = ConversationMemory()

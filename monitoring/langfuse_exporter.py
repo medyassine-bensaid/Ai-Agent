@@ -5,6 +5,7 @@ Reads recent scores via the v3 scores API (Langfuse v4; the legacy
 /api/public/scores endpoint is not available in v4 events_only mode)
 and exposes their averages.
 """
+
 import os
 import time
 from datetime import datetime, timedelta, timezone
@@ -15,21 +16,22 @@ from monitoring import langfuse_api
 
 WINDOW_HOURS = float(os.environ.get("EXPORTER_WINDOW_HOURS", "24"))
 
-g_relevance    = Gauge("llm_judge_relevance",    "LLM judge relevance score")
+g_relevance = Gauge("llm_judge_relevance", "LLM judge relevance score")
 g_faithfulness = Gauge("llm_judge_faithfulness", "LLM judge faithfulness score")
 g_completeness = Gauge("llm_judge_completeness", "LLM judge completeness score")
-g_hallucination= Gauge("llm_judge_hallucination_risk", "LLM judge hallucination risk")
-g_heuristic    = Gauge("llm_heuristic_quality",  "Heuristic quality score")
-g_error_rate   = Gauge("llm_error_rate",         "Fraction of traces with errors")
-g_scores_total = Gauge("llm_scores_fetched",     "Total scores fetched")
+g_hallucination = Gauge("llm_judge_hallucination_risk", "LLM judge hallucination risk")
+g_heuristic = Gauge("llm_heuristic_quality", "Heuristic quality score")
+g_error_rate = Gauge("llm_error_rate", "Fraction of traces with errors")
+g_scores_total = Gauge("llm_scores_fetched", "Total scores fetched")
 
 SCORE_MAP = {
-    "llm-judge/relevance":         g_relevance,
-    "llm-judge/faithfulness":      g_faithfulness,
-    "llm-judge/completeness":      g_completeness,
-    "llm-judge/hallucination_risk":g_hallucination,
-    "heuristic/quality":           g_heuristic,
+    "llm-judge/relevance": g_relevance,
+    "llm-judge/faithfulness": g_faithfulness,
+    "llm-judge/completeness": g_completeness,
+    "llm-judge/hallucination_risk": g_hallucination,
+    "heuristic/quality": g_heuristic,
 }
+
 
 def collect():
     """Average the scores of the last EXPORTER_WINDOW_HOURS (v3 scores API)."""
@@ -50,7 +52,7 @@ def collect():
         if name in buckets:
             buckets[name].append(value)
         if name == "has-error":
-            errors.append(value)   # 1 = error answer
+            errors.append(value)  # 1 = error answer
 
     for name, gauge in SCORE_MAP.items():
         vals = buckets[name]
@@ -61,6 +63,7 @@ def collect():
 
     if errors:
         g_error_rate.set(sum(errors) / len(errors))
+
 
 if __name__ == "__main__":
     start_http_server(8001)

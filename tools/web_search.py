@@ -17,9 +17,17 @@ class _TimeoutTavilyWrapper(TavilySearchAPIWrapper):
     stalled connection hangs the whole agent run. Same request, bounded wait."""
 
     # Same parameter order as TavilySearchAPIWrapper.raw_results: the tool passes them positionally
-    def raw_results(self, query: str, max_results=5, search_depth="advanced",
-                    include_domains=None, exclude_domains=None, include_answer=False,
-                    include_raw_content=False, include_images=False) -> Dict:
+    def raw_results(
+        self,
+        query: str,
+        max_results=5,
+        search_depth="advanced",
+        include_domains=None,
+        exclude_domains=None,
+        include_answer=False,
+        include_raw_content=False,
+        include_images=False,
+    ) -> Dict:
         params = {
             "api_key": self.tavily_api_key.get_secret_value(),
             "query": query,
@@ -31,8 +39,9 @@ class _TimeoutTavilyWrapper(TavilySearchAPIWrapper):
             "include_raw_content": include_raw_content,
             "include_images": include_images,
         }
-        response = requests.post(f"{TAVILY_API_URL}/search", json=params,
-                                 timeout=settings.WEB_SEARCH_TIMEOUT)
+        response = requests.post(
+            f"{TAVILY_API_URL}/search", json=params, timeout=settings.WEB_SEARCH_TIMEOUT
+        )
         response.raise_for_status()
         return response.json()
 
@@ -46,6 +55,7 @@ def make_tavily_search(api_key: str) -> TavilySearchResults:
 
 # Initialize Tavily search
 tavily_search = make_tavily_search(settings.TAVILY_API_KEY)
+
 
 @tool
 def web_search_tool(query: str) -> str:

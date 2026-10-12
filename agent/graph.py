@@ -30,8 +30,10 @@ llm = ChatGroq(
 
 # Native tool names the model may emit -> agent actions
 _NATIVE_TOOL_ACTIONS = {
-    "web_search": "use_web_search", "web_search_tool": "use_web_search",
-    "knowledge_base": "use_knowledge_base", "knowledge_base_tool": "use_knowledge_base",
+    "web_search": "use_web_search",
+    "web_search_tool": "use_web_search",
+    "knowledge_base": "use_knowledge_base",
+    "knowledge_base_tool": "use_knowledge_base",
     "rag_tool": "use_knowledge_base",
 }
 
@@ -55,8 +57,11 @@ def _decision_from_tool_use_error(error: Exception):
     query = args.get("query") or args.get("topic") if isinstance(args, dict) else None
     if not action or not query:
         return None
-    return {"reasoning": f"Model requested the {call.get('name')} tool directly",
-            "action": action, "search_query": query}
+    return {
+        "reasoning": f"Model requested the {call.get('name')} tool directly",
+        "action": action,
+        "search_query": query,
+    }
 
 
 @observe(name="reasoning-node")
@@ -87,9 +92,12 @@ def reasoning_node(state: AgentState) -> AgentState:
         return state
 
     # Format the reasoning prompt (with observations gathered so far in this turn)
-    observations = "\n\n".join(
-        msg.content for msg in state["messages"] if isinstance(msg, AIMessage)
-    ) or "None yet."
+    observations = (
+        "\n\n".join(
+            msg.content for msg in state["messages"] if isinstance(msg, AIMessage)
+        )
+        or "None yet."
+    )
     prompt = REACT_PROMPT.format(
         query=state["query"],
         context=full_context,
@@ -100,7 +108,7 @@ def reasoning_node(state: AgentState) -> AgentState:
     # Get structured response from LLM
     messages = [
         SystemMessage(content=SYSTEM_PROMPT.format(context=full_context)),
-        HumanMessage(content=prompt)
+        HumanMessage(content=prompt),
     ]
 
     try:
@@ -111,7 +119,9 @@ def reasoning_node(state: AgentState) -> AgentState:
             recovered = _decision_from_tool_use_error(e)
             if recovered is None:
                 raise
-            logger.log_action(f"Recovered native tool call: {recovered['action']}", "decision")
+            logger.log_action(
+                f"Recovered native tool call: {recovered['action']}", "decision"
+            )
             raw_content = json.dumps(recovered)
 
         # Clean up markdown formatting if present
@@ -146,23 +156,27 @@ def reasoning_node(state: AgentState) -> AgentState:
 
             # Validate search query
             if not search_query or len(search_query.strip()) < 2:
-                logger.log_error(f"Invalid search query: '{search_query}', using original question")
+                logger.log_error(
+                    f"Invalid search query: '{search_query}', using original question"
+                )
                 search_query = state["query"]
 
             tool_name = action.replace("use_", "")
-            if any(tc["tool"] == tool_name and tc["query"] == search_query
-                   for tc in state["tool_calls"]):
+            if any(
+                tc["tool"] == tool_name and tc["query"] == search_query
+                for tc in state["tool_calls"]
+            ):
                 # Repeating an executed call cannot add information - answer instead
-                logger.log_action(f"Duplicate {tool_name} call skipped, ready to answer", "decision")
+                logger.log_action(
+                    f"Duplicate {tool_name} call skipped, ready to answer", "decision"
+                )
                 state["ready_to_answer"] = True
                 state["action"] = "answer_directly"
             else:
                 # Store structured tool call
-                state["tool_calls"].append(ToolCall(
-                    tool=tool_name,
-                    query=search_query,
-                    reasoning=reasoning
-                ))
+                state["tool_calls"].append(
+                    ToolCall(tool=tool_name, query=search_query, reasoning=reasoning)
+                )
         else:
             logger.log_error(f"Unknown action: {action}, defaulting to answer")
             state["ready_to_answer"] = True
@@ -173,7 +187,9 @@ def reasoning_node(state: AgentState) -> AgentState:
         # Fallback: answer directly with existing knowledge
         state["ready_to_answer"] = True
         state["action"] = "answer_directly"
-        state["thought"] = "Unable to parse structured response, answering with existing knowledge"
+        state["thought"] = (
+            "Unable to parse structured response, answering with existing knowledge"
+        )
 
     except Exception as e:
         logger.log_error(f"Reasoning error: {e}")
@@ -183,6 +199,7 @@ def reasoning_node(state: AgentState) -> AgentState:
 
     state["iteration"] += 1
     return state
+
 
 @observe(name="tool-execution-node")
 def tool_execution_node(state: AgentState) -> AgentState:
@@ -217,6 +234,7 @@ def tool_execution_node(state: AgentState) -> AgentState:
         elif tool_name == "knowledge_base":
             # FIX: use semantic RAG instead of dict lookup
             from tools.rag_tool import rag_tool
+
             observation = rag_tool.invoke({"query": query})
         else:
             observation = f"Error: Unknown tool '{tool_name}'"
@@ -225,14 +243,18 @@ def tool_execution_node(state: AgentState) -> AgentState:
         # Validate observation
         if not observation or len(observation.strip()) < 10:
             logger.log_error("Tool returned empty/invalid result")
-            observation = f"Tool '{tool_name}' returned no useful information for query '{query}'"
+            observation = (
+                f"Tool '{tool_name}' returned no useful information for query '{query}'"
+            )
 
         logger.log_observation(observation)
 
         # Store observation in messages
-        state["messages"].append(AIMessage(
-            content=f"Tool: {tool_name}\nQuery: {query}\nResult:\n{observation}"
-        ))
+        state["messages"].append(
+            AIMessage(
+                content=f"Tool: {tool_name}\nQuery: {query}\nResult:\n{observation}"
+            )
+        )
 
         # After successful tool execution, we're ready to answer
         state["ready_to_answer"] = True
@@ -242,14 +264,15 @@ def tool_execution_node(state: AgentState) -> AgentState:
         logger.log_error(error_msg)
 
         # Store error as observation
-        state["messages"].append(AIMessage(
-            content=f"Tool: {tool_name}\nQuery: {query}\nError: {error_msg}"
-        ))
+        state["messages"].append(
+            AIMessage(content=f"Tool: {tool_name}\nQuery: {query}\nError: {error_msg}")
+        )
 
         # Even on failure, proceed to answer (agent will acknowledge limitation)
         state["ready_to_answer"] = True
 
     return state
+
 
 @observe(name="answer-node")
 def answer_node(state: AgentState) -> AgentState:
@@ -276,13 +299,12 @@ def answer_node(state: AgentState) -> AgentState:
 
     # Generate final answer
     prompt = FINAL_ANSWER_PROMPT.format(
-        query=state["query"],
-        reasoning_history=reasoning_history
+        query=state["query"], reasoning_history=reasoning_history
     )
 
     messages = [
         SystemMessage(content=SYSTEM_PROMPT.format(context=full_context)),
-        HumanMessage(content=prompt)
+        HumanMessage(content=prompt),
     ]
 
     try:
@@ -309,6 +331,7 @@ def answer_node(state: AgentState) -> AgentState:
         )
 
     return state
+
 
 def should_continue(state: AgentState) -> Literal["tool_execution", "answer", "end"]:
     """
@@ -350,6 +373,7 @@ def should_continue(state: AgentState) -> Literal["tool_execution", "answer", "e
     logger.log_error("Reached unexpected routing state")
     return "answer"
 
+
 def build_agent_graph():
     """Build the LangGraph ReAct agent with clean separation of concerns"""
 
@@ -367,11 +391,7 @@ def build_agent_graph():
     workflow.add_conditional_edges(
         "reasoning",
         should_continue,
-        {
-            "tool_execution": "tool_execution",
-            "answer": "answer",
-            "end": END
-        }
+        {"tool_execution": "tool_execution", "answer": "answer", "end": END},
     )
 
     # After tool execution, reason again over the new observation (ReAct loop);
@@ -382,6 +402,7 @@ def build_agent_graph():
     workflow.add_edge("answer", END)
 
     return workflow.compile()
+
 
 # Create the agent
 agent_graph = build_agent_graph()

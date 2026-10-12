@@ -19,7 +19,6 @@ DEVOPS_KNOWLEDGE = {
 
     Common tools: Jenkins, GitLab CI, GitHub Actions, CircleCI, Travis CI
     """,
-
     "docker": """
     Docker is a containerization platform that packages applications and dependencies into containers.
 
@@ -35,7 +34,6 @@ DEVOPS_KNOWLEDGE = {
     - Resource efficiency
     - Rapid deployment
     """,
-
     "kubernetes": """
     Kubernetes (K8s) is a container orchestration platform for automating deployment, scaling, and management of containerized applications.
 
@@ -51,7 +49,6 @@ DEVOPS_KNOWLEDGE = {
     - Load balancing
     - Rolling updates
     """,
-
     "infrastructure as code": """
     Infrastructure as Code (IaC) is managing infrastructure through code rather than manual processes.
 
@@ -67,7 +64,6 @@ DEVOPS_KNOWLEDGE = {
     - Ansible: Configuration management
     - Pulumi: Programming language-based IaC
     """,
-
     "devops culture": """
     DevOps is a cultural philosophy that emphasizes collaboration between development and operations teams.
 
@@ -82,8 +78,9 @@ DEVOPS_KNOWLEDGE = {
     1. Flow: Optimize delivery pipeline
     2. Feedback: Amplify feedback loops
     3. Continuous Learning: Experimentation and learning
-    """
+    """,
 }
+
 
 @tool
 def knowledge_base_tool(topic: str) -> str:
