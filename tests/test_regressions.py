@@ -547,3 +547,54 @@ def test_refusal_with_typographic_apostrophes_is_recognised():
     )
     result = {"answer": answer, "evidence": "", "tool_calls": [], "scores": {}}
     assert check_case({"expect_refusal": True, "judge_min": {}}, result, {}, {}) == []
+
+
+# ─── Router skipped a refined search (found in the Langfuse trace view) ──────
+
+
+def test_router_executes_refined_query_that_is_substring_of_previous():
+    """Trace 1648f887...: second query 'Helm latest release' was a substring of the first
+    observation ('Query: Helm latest release version'), so the old text-matching router
+    sent the agent to answer and the planned search never ran."""
+    from agent.graph import should_continue
+
+    state = {
+        "iteration": 2,
+        "ready_to_answer": False,
+        "tool_calls": [
+            {
+                "tool": "web_search",
+                "query": "Helm latest release version",
+                "reasoning": "x",
+            },
+            {"tool": "web_search", "query": "Helm latest release", "reasoning": "y"},
+        ],
+        "messages": [
+            AIMessage(
+                content="Tool: web_search\nQuery: Helm latest release version\nError: x"
+            )
+        ],
+    }
+    assert should_continue(state) == "tool_execution"
+
+
+def test_run_agent_detailed_reports_only_executed_tool_calls(monkeypatch):
+    import main
+
+    final = {
+        "final_answer": "a",
+        "tool_calls": [
+            {"tool": "web_search", "query": "q1", "reasoning": "x"},
+            {
+                "tool": "web_search",
+                "query": "q2",
+                "reasoning": "y",
+            },  # planned, never ran
+        ],
+        "messages": [AIMessage(content="Tool: web_search\nQuery: q1\nResult:\nr")],
+    }
+    monkeypatch.setattr(main, "_get_scorer", lambda: None)
+    with patch("main.agent_graph") as g:
+        g.invoke.return_value = final
+        res = main.run_agent_detailed("q", session_id="s")
+    assert [tc["query"] for tc in res["tool_calls"]] == ["q1"]

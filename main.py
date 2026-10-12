@@ -7,7 +7,7 @@ from langchain_core.messages import AIMessage
 from langfuse import get_client, observe, propagate_attributes
 from langfuse.langchain import CallbackHandler
 
-from agent.graph import agent_graph
+from agent.graph import agent_graph, executed_tool_count
 from agent.state import AgentState
 from config.settings import settings
 from utils.logger import logger, safe_print
@@ -106,7 +106,10 @@ def run_agent_detailed(query: str, session_id: str | None = None) -> dict:
                 initial_state, config={"callbacks": [langfuse_handler]}
             )
         result["answer"] = final_state["final_answer"]
-        result["tool_calls"] = list(final_state.get("tool_calls") or [])
+        # Report only calls that actually ran (a planned call can be cut off by
+        # MAX_ITERATIONS)
+        planned = list(final_state.get("tool_calls") or [])
+        result["tool_calls"] = planned[: executed_tool_count(final_state)]
         result["evidence"] = _evidence_from_state(final_state)
 
     except Exception as e:

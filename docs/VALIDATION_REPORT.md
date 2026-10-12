@@ -14,11 +14,11 @@ Last updated 2026-10-12 (see section K for the CI/CD runs and the changes made o
   links it did not retrieve.
 - Every run is traced in Langfuse v4: node, generation, tool, retriever and evaluator spans,
   plus LLM-judge, heuristic and evaluation scores that are read back through the API.
-- Unit/regression suite: **116 passed, 0 failed**; `ruff check` and `ruff format --check` clean.
+- Unit/regression suite: **119 passed, 0 failed**; `ruff check` and `ruff format --check` clean.
 - GitHub Actions on the public repository runs **21 jobs**. On the latest run (`38e401d`),
   every quality, security, unit-test and container job passed.
 
-**Fixed:** 23 defects (sections D and K), several of which made the monitoring silently
+**Fixed:** 25 defects (sections D and K), several of which made the monitoring silently
 useless. The LLM judge never produced a score, every Langfuse read path returned 404 on v4,
 the CI test step and quality gate could not fail, and the agent fabricated sources after a
 failed search. Vulnerable LangChain/LangGraph pins were upgraded (pip-audit: 27 → 13 findings).
@@ -30,7 +30,8 @@ failed search. Vulnerable LangChain/LangGraph pins were upgraded (pip-audit: 27 
   - In CI, with every evaluable case judged: 3 of 6 critical cases passed. The 3 failures led to fixes 17–19.
   - After those fixes, BOTH-01 and ROB-02 were verified end to end with `gpt-oss-20b` (section K).
   - The latest CI run reported all 6 critical cases **BLOCKED** by the quota, not failed.
-- The Langfuse web UI was not inspected: the app's Browser pane was never signed in.
+- Langfuse UI: inspected on 2026-10-12 through read-only screenshots of the user's signed-in
+  Edge session (K.9); this inspection led to fixes 24 and 25.
 
 ## B. Context recovered
 
@@ -152,7 +153,7 @@ http://localhost:3000 (project "DevOps Q&A Agent"):
 - **Scores:** each evaluated trace carries the 4 `llm-judge/*`, `heuristic/quality`, `has-error`, `eval/passed` and `eval/routing-correct` scores. The runner re-reads them and checks the values (traces `3a70a091818b51a0ec726a84b774a25e`, `b3139f2b…`).
 - **Eval filtering:** eval traces are tagged `eval` + category, with session `eval-<run>-<case>`.
 - **Not available:** cost (no Groq model price is defined in Langfuse).
-- **UI and dashboards:** **not inspected**. The Browser pane of the desktop app showed the sign-in page every time; signing in must happen inside that pane (or connect Claude in Chrome).
+- **UI and dashboards:** inspected on 2026-10-12; see K.9.
 
 ## H. GitHub and CI/CD
 
@@ -180,7 +181,6 @@ http://localhost:3000 (project "DevOps Q&A Agent"):
 | `requirements.lock` frozen from the validated Windows venv (Docker→PyPI stalled; disk full) | Medium | Linux install is verified by the CI test job; regenerate on Linux when possible |
 | C: drive had 0.13 GB free (pip cache purged → 2.18 GB) | **High** | Free disk space: Docker, Langfuse ClickHouse/Postgres and Chroma live on C: |
 | Local Langfuse uses the upstream `CHANGEME` defaults; ports 3000/9090 bound on 0.0.0.0 | High (local security) | Set real secrets; bind to 127.0.0.1 |
-| Langfuse UI/dashboards not inspected | Medium | Sign in inside the app's Browser pane |
 | Memory is a process-global singleton (no concurrency support) | Low | By design for the CLI; documented |
 | k8s memory limit 512Mi likely too small for torch + MiniLM | Medium (untested) | Raise to ~1.5Gi and test on Minikube |
 | Historical scores: `has-error` inverted, no judge scores before the fix | Low | Filter dashboards to dates after 2026-10-11 19:00 UTC |
@@ -192,7 +192,7 @@ http://localhost:3000 (project "DevOps Q&A Agent"):
 pip install --extra-index-url https://download.pytorch.org/whl/cpu -r requirements.lock
 cp .env.example .env                      # GROQ / TAVILY / LANGFUSE keys
 python main.py                            # CLI
-python -m pytest                          # 116 unit/regression tests
+python -m pytest                          # 119 unit/regression tests
 python -m evals.run_eval --critical-only  # live, 6 cases; drop the flag for all 34
 python -m monitoring.eval_runner          # gate over the last hour of scores
 ```
@@ -288,7 +288,35 @@ fix published (chromadb 1.5.9). Validation of the upgraded stack:
 - A full 34-case live run once the Groq quota allows it (≈5–7k tokens per case). Use a
   manual "Run workflow" with `full_eval`, or `python -m evals.run_eval` locally to fill the
   local Langfuse dashboards.
-- Langfuse UI and dashboard inspection (sign in inside the app's Browser pane).
 - LangChain 1.x migration for the remaining advisories; chromadb has no fix yet.
 - Low disk space on C: (1.3–2.2 GB free during this work).
+
+### K.9 Langfuse UI verification (2026-10-12)
+The Langfuse UI was inspected through read-only screenshots of the user's signed-in Edge
+window (project "DevOps Q&A Agent", Langfuse v4.50.0); the app's own Browser pane was never
+signed in.
+
+| View | Observed |
+|---|---|
+| Dashboards → Langfuse Agent Dashboard | P95 Tool Latency by Tool: rag_tool 9.38 s, web_search_tool 5.95 s, tavily_search_results_json 5.95 s. P95 Latency by Observation Type with CHAIN, SPAN, GENERATION, TOOL, RETRIEVER and EVALUATOR series. "Total Tool Calls" shows *No data*, as expected: it counts native tool calls inside LLM generations, and this agent decides routing with JSON and runs tools from the graph. |
+| Tool Errors by Tool | Empty at first although searches had failed → **fix 24**. After the fix it shows `web_search_tool: 1`. |
+| Trace `1648f8874f547053f8f223a1c74e84c4` | 6.15 s, 3,741 tokens; tree agent-run → LangGraph → reasoning (ChatGroq 822 tok) → tool_execution → web_search_tool **ERROR** → tavily_search_results_json → reasoning → answer (ChatGroq 1,194 tok) → llm-judge (EVALUATOR) → OpenAI-generation (814 tok, gpt-oss-20b). Score chips has-error=False, heuristic/quality=1.00 (+4). The judge input contains the question, the error evidence with the no-evidence note, and the answer with `[unverified link removed]`. Only **one** tool_execution, although two searches were reported → **fix 25**. |
+| Tracing filters | Observation counts by type: CHAIN 537, SPAN 238, GENERATION 156, TOOL 52, RETRIEVER 20, EVALUATOR 11. |
+
+**Fix 24: failed searches invisible in error analytics.** `web_search_tool` returned the
+error text, so the LangChain callback recorded a successful tool run. It now raises;
+`tool_execution_node` turns the exception into a no-evidence observation. Verified live:
+`web_search_tool level=ERROR`, status "Web search failed: HTTPError('401 …')"
+(`test_failed_web_search_is_reported_to_tracing_as_tool_error`; the original
+`test_web_search_handles_tool_exception` now asserts the new contract end to end).
+
+**Fix 25: refined search silently skipped (pre-existing router bug).** `should_continue`
+treated a tool call as executed when its query text appeared in any earlier observation.
+The refined query "Helm latest release" is a substring of "Query: Helm latest release
+version", so the second search never ran but was still reported in `tool_calls` (which also
+skewed the eval routing check). The router now compares the number of observations with the
+number of calls, and `run_agent_detailed` reports only executed calls. Verified live: trace
+`9d1c51aaafc101a3e56f2961a19176ab` has two web_search_tool executions
+(`test_router_executes_refined_query_that_is_substring_of_previous`,
+`test_run_agent_detailed_reports_only_executed_tool_calls`).
 

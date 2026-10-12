@@ -400,6 +400,15 @@ def answer_node(state: AgentState) -> AgentState:
     return state
 
 
+def executed_tool_count(state: AgentState) -> int:
+    """Number of tool calls that produced an observation (success or error)."""
+    return sum(
+        1
+        for msg in state.get("messages", [])
+        if isinstance(msg, AIMessage) and str(msg.content).startswith("Tool: ")
+    )
+
+
 def should_continue(state: AgentState) -> Literal["tool_execution", "answer", "end"]:
     """
     Routing logic based on state.
@@ -420,21 +429,12 @@ def should_continue(state: AgentState) -> Literal["tool_execution", "answer", "e
     if state["ready_to_answer"]:
         return "answer"
 
-    # If we have a pending tool call (not yet executed)
-    if state["tool_calls"]:
-        # Check if this tool has been executed
-        last_tool = state["tool_calls"][-1]
-        tool_query = last_tool["query"]
-
-        # Check if we have an observation for this tool
-        has_observation = any(
-            tool_query in msg.content
-            for msg in state["messages"]
-            if isinstance(msg, AIMessage)
-        )
-
-        if not has_observation:
-            return "tool_execution"
+    # A tool call is pending while there are fewer observations than calls: every
+    # execution appends exactly one observation. (Matching the query text against
+    # earlier observations skipped a refined search whose query was a substring of
+    # the previous one, e.g. "Helm latest release" vs "Helm latest release version".)
+    if len(state["tool_calls"]) > executed_tool_count(state):
+        return "tool_execution"
 
     # Default: end (shouldn't reach here in normal flow)
     logger.log_error("Reached unexpected routing state")
